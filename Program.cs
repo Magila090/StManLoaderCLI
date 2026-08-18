@@ -562,107 +562,758 @@ async Task DownloadMenuAsync()
     Console.WriteLine($"✓ AppID: {appId}");
 
     // --------------------------------------------------------
-    // Определяем ОС depot'ов через Steam PICS.
+    // Полный список Lua
     // --------------------------------------------------------
 
-    Console.WriteLine();
-    Console.WriteLine("Получаем информацию об ОС depot'ов из Steam...");
+    var allLuaDepots =
+        depots.ToDictionary(
+            x => x.DepotId,
+            x => x);
 
-    Dictionary<uint, string> depotOs;
+    // --------------------------------------------------------
+    // Manifest'ы читаем заранее.
+    //
+    // Это важно: если Steam не указал oslist у depot'а,
+    // мы сможем определить платформу по содержимому manifest
+    // ещё ДО выбора DLC.
+    // --------------------------------------------------------
 
-    try
-    {
-        depotOs =
-            await SteamDepotOsResolver.GetDepotOsAsync(
-                steamClient,
-                appId);
-    }
-    catch (Exception ex)
+    var manifestPaths = Directory
+        .GetFiles(
+            sourceDirectory,
+            "*.manifest",
+            SearchOption.TopDirectoryOnly)
+        .ToList();
+
+    if (manifestPaths.Count == 0)
     {
         Console.WriteLine();
         Console.WriteLine(
-            $"✗ Не удалось получить информацию об ОС: {ex.Message}");
+            "✗ В папке не найдено manifest-файлов.");
 
         await PauseAsync();
         return;
     }
 
-    Console.WriteLine(
-        $"✓ Получена информация об ОС для {depotOs.Count} depot.");
+    // depotId -> путь к manifest.
+    var localManifestPaths =
+        new Dictionary<uint, (string Path, ulong ManifestId)>();
 
-    // --------------------------------------------------------
-    // ОС берём из настройки главного меню.
-    // Никаких дополнительных вопросов при скачивании.
-    // --------------------------------------------------------
-
-    Console.WriteLine();
-    Console.WriteLine("========================================");
-    Console.WriteLine("ВЫБРАННАЯ ОПЕРАЦИОННАЯ СИСТЕМА");
-    Console.WriteLine("========================================");
-    Console.WriteLine();
-    Console.WriteLine($"✓ ОС: {FormatDepotOs(selectedOs)}");
-    Console.WriteLine();
-
-    Console.WriteLine();
-    Console.WriteLine("Depot'ы из Steam:");
-
-    foreach (var depot in depots)
+    foreach (string manifestPath in manifestPaths)
     {
-        string os =
-            depotOs.TryGetValue(
-                depot.DepotId,
-                out string? value)
-                ? value
-                : "all";
+        string fileName =
+            Path.GetFileNameWithoutExtension(manifestPath);
 
-        Console.WriteLine(
-            $"  {depot.DepotId}: {FormatDepotOs(os)}");
+        string[] parts =
+            fileName.Split('_');
+
+        if (parts.Length < 2 ||
+            !uint.TryParse(
+                parts[0],
+                out uint depotId) ||
+            !ulong.TryParse(
+                parts[1],
+                out ulong manifestId))
+        {
+            Console.WriteLine(
+                $"⚠ Пропускаем manifest с неправильным именем: " +
+                $"{Path.GetFileName(manifestPath)}");
+
+            continue;
+        }
+
+        if (!allLuaDepots.TryGetValue(
+                depotId,
+                out SteamDepotInfo? luaDepot))
+        {
+            Console.WriteLine(
+                $"⚠ Manifest {Path.GetFileName(manifestPath)} " +
+                $"не относится к depot из Lua.");
+
+            continue;
+        }
+
+        if (luaDepot.ManifestId != manifestId)
+        {
+            Console.WriteLine(
+                $"⚠ ManifestID не совпадает для depot {depotId}: " +
+                $"{Path.GetFileName(manifestPath)}");
+
+            continue;
+        }
+
+        localManifestPaths[depotId] =
+            (manifestPath, manifestId);
     }
 
     Console.WriteLine();
+    Console.WriteLine(
+        $"✓ Подготовлено локальных manifest: " +
+        $"{localManifestPaths.Count}/{manifestPaths.Count}");
 
-    // Depot без oslist являются общими и подходят для любой ОС.
-    if (selectedOs != "all")
+    // --------------------------------------------------------
+    // Получаем DLC из Steam.
+    // --------------------------------------------------------
+
+    List<SteamDlcInfo> allDlcs = new();
+    List<SteamDlcInfo> availableDlcs = new();
+
+    try
     {
-        var filteredDepots =
-            depots
-                .Where(depot =>
-                {
-                    if (!depotOs.TryGetValue(
-                            depot.DepotId,
-                            out string? osList) ||
-                        string.IsNullOrWhiteSpace(osList) ||
-                        osList.Equals(
-                            "all",
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        return true;
-                    }
+        Console.WriteLine();
+        Console.WriteLine("Получаем список DLC из Steam...");
 
-                    return DepotOsMatches(
-                        osList,
-                        selectedOs);
-                })
-                .ToList();
+        allDlcs =
+            await SteamDlcResolver.GetDlcsAsync(
+                steamClient,
+                appId);
 
         Console.WriteLine(
-            $"✓ Подходящих depot для {FormatDepotOs(selectedOs)}: " +
-            $"{filteredDepots.Count}/{depots.Count}");
+            $"✓ Steam вернул DLC: {allDlcs.Count}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            $"⚠ Не удалось получить список DLC: {ex.Message}");
 
-        if (filteredDepots.Count == 0)
+        allDlcs = new List<SteamDlcInfo>();
+    }
+
+    // --------------------------------------------------------
+    // ОС основной игры.
+    //
+    // Получаем её заранее, чтобы использовать не только для
+    // основной игры, но и при формировании общего списка.
+    // --------------------------------------------------------
+
+    Dictionary<uint, string> depotOs = new();
+
+    if (downloadDirectory != null)
+    {
+        try
+        {
+            depotOs =
+                await SteamDepotOsResolver.GetDepotOsAsync(
+                    steamClient,
+                    appId);
+
+            Console.WriteLine(
+                $"✓ Получена информация об ОС для " +
+                $"{depotOs.Count} depot основной игры.");
+        }
+        catch (Exception ex)
         {
             Console.WriteLine();
             Console.WriteLine(
-                "✗ Для выбранной ОС depot'ов не найдено.");
+                $"⚠ Не удалось получить информацию об ОС основной игры: " +
+                $"{ex.Message}");
+
+            // Не прекращаем работу: для depot'ов без информации
+            // попробуем определить платформу по manifest.
+        }
+    }
+
+    // --------------------------------------------------------
+    // Собираем известные Steam OS для всех depot'ов.
+    //
+    // Для DLC SteamDlcResolver уже возвращает DepotOs.
+    // --------------------------------------------------------
+
+    var steamOsByDepot =
+        new Dictionary<uint, string>(
+            depotOs);
+
+    foreach (SteamDlcInfo dlc in allDlcs)
+    {
+        foreach (var pair in dlc.DepotOs)
+        {
+            steamOsByDepot[pair.Key] = pair.Value;
+        }
+    }
+
+    // --------------------------------------------------------
+    // Определяем платформу каждого локального depot'а.
+    //
+    // 1. Если Steam явно указал OS — доверяем Steam.
+    // 2. Если oslist пустой — анализируем manifest.
+    // --------------------------------------------------------
+
+    var depotPlatforms =
+        new Dictionary<uint, DepotPlatform>();
+
+    var depotPlatformDetails =
+        new Dictionary<uint, string>();
+
+    foreach (var pair in localManifestPaths)
+    {
+        uint depotId = pair.Key;
+        string manifestPath = pair.Value.Path;
+
+        string? steamOs = null;
+
+        if (steamOsByDepot.TryGetValue(
+                depotId,
+                out string? knownOs))
+        {
+            steamOs = knownOs;
+        }
+
+        // Явная OS от Steam — самый надёжный источник.
+        if (!string.IsNullOrWhiteSpace(steamOs) &&
+            !steamOs.Equals(
+                "all",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            string normalized =
+                steamOs.Trim().ToLowerInvariant();
+
+            DepotPlatform platform;
+
+            if (normalized.Contains("windows") ||
+                normalized == "win")
+            {
+                platform = DepotPlatform.Windows;
+            }
+            else if (normalized.Contains("linux"))
+            {
+                platform = DepotPlatform.Linux;
+            }
+            else if (normalized.Contains("macos") ||
+                     normalized == "mac" ||
+                     normalized == "macosx")
+            {
+                platform = DepotPlatform.MacOS;
+            }
+            else
+            {
+                platform = DepotPlatform.Shared;
+            }
+
+            depotPlatforms[depotId] = platform;
+            depotPlatformDetails[depotId] =
+                $"Steam: {FormatDepotOs(steamOs)}";
+
+            continue;
+        }
+
+        // oslist пустой — читаем manifest.
+        try
+        {
+            DepotManifest manifest;
+
+            await using (
+                var stream =
+                    File.OpenRead(manifestPath))
+            {
+                manifest =
+                    DepotManifest.Deserialize(stream);
+            }
+
+            // Некоторые manifest'ы хранят имена файлов в зашифрованном
+            // виде. Для анализа платформы по именам их сначала нужно
+            // расшифровать ключом соответствующего depot.
+            if (manifest.FilenamesEncrypted)
+            {
+                if (!allLuaDepots.TryGetValue(
+                        depotId,
+                        out SteamDepotInfo? luaDepotForKey) ||
+                    string.IsNullOrWhiteSpace(luaDepotForKey.DepotKey))
+                {
+                    throw new IOException(
+                        $"Нет depot key для расшифровки manifest {depotId}.");
+                }
+
+                byte[] manifestDepotKey =
+                    Convert.FromHexString(luaDepotForKey.DepotKey);
+
+                manifest.DecryptFilenames(manifestDepotKey);
+            }
+
+            var fileNames =
+                (manifest.Files ?? new List<DepotManifest.FileData>())
+                    .Select(file => file.FileName)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .ToList();
+
+            DepotPlatform detected =
+                SteamDepotPlatformResolver
+                    .DetectFromFileNames(fileNames);
+
+            depotPlatforms[depotId] = detected;
+
+            depotPlatformDetails[depotId] =
+                detected == DepotPlatform.Unknown
+                    ? "Manifest: неизвестно"
+                    : $"Manifest: {FormatDepotPlatform(detected)}";
+        }
+        catch (Exception ex)
+        {
+            depotPlatforms[depotId] =
+                DepotPlatform.Unknown;
+
+            depotPlatformDetails[depotId] =
+                $"Manifest: ошибка анализа ({ex.Message})";
+        }
+    }
+
+    bool IsDepotAllowedForSelectedOs(uint depotId)
+    {
+        if (selectedOs == "all")
+            return true;
+
+        if (!depotPlatforms.TryGetValue(
+                depotId,
+                out DepotPlatform platform))
+        {
+            // Нет локального manifest — нечего скачивать.
+            return false;
+        }
+
+        return SteamDepotPlatformResolver.IsCompatible(
+            platform,
+            selectedOs);
+    }
+
+    // DLC может иметь depot'ы, перечисленные Steam,
+    // а иногда manifest находится под AppID самого DLC.
+    var knownDlcDepotIds =
+        allDlcs
+            .SelectMany(dlc =>
+                dlc.DepotIds
+                    .Append(dlc.AppId))
+            .ToHashSet();
+
+    // Depot'ы основной игры.
+    var gameLuaDepots =
+        depots
+            .Where(x => !knownDlcDepotIds.Contains(x.DepotId))
+            .ToList();
+
+    // Если Steam вообще не вернул DLC — считаем весь Lua
+    // принадлежащим основной игре.
+    if (allDlcs.Count == 0)
+    {
+        gameLuaDepots = depots.ToList();
+    }
+
+    // --------------------------------------------------------
+    // DLC показываем только если:
+    // 1. depot реально есть в Lua;
+    // 2. у него есть подходящий manifest;
+    // 3. depot совместим с выбранной ОС.
+    // --------------------------------------------------------
+
+    bool IsDlcDepotAllowed(
+        SteamDlcInfo dlc,
+        uint depotId)
+    {
+        if (!allLuaDepots.ContainsKey(depotId))
+            return false;
+
+        if (!localManifestPaths.ContainsKey(depotId))
+            return false;
+
+        if (selectedOs == "all")
+            return true;
+
+        return IsDepotAllowedForSelectedOs(depotId);
+    }
+
+    availableDlcs =
+        allDlcs
+            .Where(dlc =>
+                dlc.DepotIds
+                    .Append(dlc.AppId)
+                    .Distinct()
+                    .Any(id =>
+                        IsDlcDepotAllowed(
+                            dlc,
+                            id)))
+            .ToList();
+
+    // --------------------------------------------------------
+    // Что именно скачиваем.
+    // Сначала спрашиваем режим, а уже после этого показываем
+    // только те depot'ы, которые относятся к выбранному режиму.
+    // --------------------------------------------------------
+
+    string downloadMode;
+
+    if (availableDlcs.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("========================================");
+        Console.WriteLine("ЧТО СКАЧИВАТЬ");
+        Console.WriteLine("========================================");
+        Console.WriteLine();
+        Console.WriteLine("1. Только игру");
+        Console.WriteLine("2. Только DLC");
+        Console.WriteLine("3. Игру и DLC");
+        Console.WriteLine();
+
+        while (true)
+        {
+            Console.Write("Выберите вариант: ");
+
+            string? modeInput = Console.ReadLine();
+
+            downloadMode = modeInput switch
+            {
+                "1" => "game",
+                "2" => "dlc",
+                "3" => "both",
+                _ => ""
+            };
+
+            if (!string.IsNullOrEmpty(downloadMode))
+                break;
+
+            Console.WriteLine();
+            Console.WriteLine(
+                "✗ Неправильный выбор. Введите 1, 2 или 3.");
+            Console.WriteLine();
+        }
+    }
+    else
+    {
+        downloadMode = "game";
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "✓ Подходящих DLC в папке для выбранной ОС не найдено.");
+        Console.WriteLine(
+            "  Будет скачана только игра.");
+    }
+
+    bool downloadGame =
+        downloadMode == "game" ||
+        downloadMode == "both";
+
+    bool downloadDlc =
+        downloadMode == "dlc" ||
+        downloadMode == "both";
+
+    // --------------------------------------------------------
+    // Диагностика depot'ов основной игры.
+    // Показываем её только если выбрана игра.
+    // --------------------------------------------------------
+
+    if (downloadGame)
+    {
+        Console.WriteLine();
+        Console.WriteLine("========================================");
+        Console.WriteLine("DEPOT'Ы ОСНОВНОЙ ИГРЫ");
+        Console.WriteLine("========================================");
+        Console.WriteLine();
+        Console.WriteLine($"ОС: {FormatDepotOs(selectedOs)}");
+        Console.WriteLine();
+
+        foreach (SteamDepotInfo depot in gameLuaDepots)
+        {
+            if (!depotPlatforms.TryGetValue(
+                    depot.DepotId,
+                    out DepotPlatform platform))
+            {
+                Console.WriteLine(
+                    $"  {depot.DepotId}: неизвестно " +
+                    "[нет подходящего manifest]");
+                continue;
+            }
+
+            bool allowed =
+                IsDepotAllowedForSelectedOs(depot.DepotId);
+
+            Console.WriteLine(
+                $"  {depot.DepotId}: " +
+                $"{FormatDepotPlatform(platform)} " +
+                $"[{depotPlatformDetails[depot.DepotId]}]" +
+                $" {(allowed ? "✓" : "✗")}");
+        }
+
+        Console.WriteLine();
+
+        int compatibleGameDepots =
+            gameLuaDepots.Count(depot =>
+                IsDepotAllowedForSelectedOs(depot.DepotId));
+
+        Console.WriteLine(
+            $"✓ Подходящих depot основной игры: " +
+            $"{compatibleGameDepots}/{gameLuaDepots.Count}");
+
+        if (compatibleGameDepots == 0 && !downloadDlc)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "✗ Для выбранной ОС depot'ов основной игры не найдено.");
 
             await PauseAsync();
             return;
         }
+    }
 
-        depots = filteredDepots;
+    // --------------------------------------------------------
+    // Диагностика depot'ов DLC.
+    // Показываем её только если выбрано DLC.
+    // --------------------------------------------------------
+
+    if (downloadDlc)
+    {
+        Console.WriteLine();
+        Console.WriteLine("========================================");
+        Console.WriteLine("DEPOT'Ы DLC");
+        Console.WriteLine("========================================");
+        Console.WriteLine();
+        Console.WriteLine($"ОС: {FormatDepotOs(selectedOs)}");
+        Console.WriteLine();
+
+        foreach (SteamDlcInfo dlc in allDlcs)
+        {
+            var dlcDepotIds =
+                dlc.DepotIds
+                    .Append(dlc.AppId)
+                    .Distinct()
+                    .Where(id => allLuaDepots.ContainsKey(id))
+                    .ToList();
+
+            if (dlcDepotIds.Count == 0)
+                continue;
+
+            int compatibleCount =
+                dlcDepotIds.Count(id => IsDlcDepotAllowed(dlc, id));
+
+            Console.WriteLine(dlc.Name);
+
+            foreach (uint depotId in dlcDepotIds)
+            {
+                if (!depotPlatforms.TryGetValue(
+                        depotId,
+                        out DepotPlatform platform))
+                {
+                    Console.WriteLine(
+                        $"  {depotId}: неизвестно " +
+                        "[нет подходящего manifest] ✗");
+                    continue;
+                }
+
+                bool allowed =
+                    IsDlcDepotAllowed(dlc, depotId);
+
+                Console.WriteLine(
+                    $"  {depotId}: " +
+                    $"{FormatDepotPlatform(platform)} " +
+                    $"[{depotPlatformDetails[depotId]}]" +
+                    $" {(allowed ? "✓" : "✗")}");
+            }
+
+            Console.WriteLine(
+                $"  Подходящих depot: " +
+                $"{compatibleCount}/{dlcDepotIds.Count}");
+            Console.WriteLine();
+        }
+    }
+
+    // --------------------------------------------------------
+    // Фильтруем depot'ы основной игры.
+    // --------------------------------------------------------
+
+    if (downloadGame)
+    {
+        depots =
+            gameLuaDepots
+                .Where(depot =>
+                    IsDepotAllowedForSelectedOs(
+                        depot.DepotId))
+                .ToList();
+    }
+    else
+    {
+        depots = new List<SteamDepotInfo>();
+    }
+
+    // --------------------------------------------------------
+    // Выбор DLC.
+    // --------------------------------------------------------
+
+    var selectedDlcDepotIds =
+        new HashSet<uint>();
+
+    if (downloadDlc)
+    {
+        if (availableDlcs.Count == 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "✗ Для выбранной ОС нет доступных DLC.");
+
+            if (!downloadGame)
+            {
+                await PauseAsync();
+                return;
+            }
+        }
+        else
+        {
+            Console.WriteLine();
+            Console.WriteLine("========================================");
+            Console.WriteLine("ДОСТУПНЫЕ DLC");
+            Console.WriteLine("========================================");
+            Console.WriteLine();
+            Console.WriteLine(
+                $"ОС: {FormatDepotOs(selectedOs)}");
+            Console.WriteLine();
+
+            for (int i = 0; i < availableDlcs.Count; i++)
+            {
+                Console.WriteLine(
+                    $"{i + 1}. {availableDlcs[i].Name}");
+            }
+
+            Console.WriteLine();
+            Console.WriteLine(
+                "Введите номера DLC через пробел или запятую.");
+            Console.WriteLine("0 — не скачивать DLC.");
+            Console.WriteLine("Например: 1 3");
+            Console.WriteLine();
+
+            while (true)
+            {
+                Console.Write("Какие DLC скачать: ");
+
+                string? dlcInput = Console.ReadLine();
+
+                if (string.IsNullOrWhiteSpace(dlcInput))
+                {
+                    Console.WriteLine(
+                        "✗ Неправильный ввод DLC. Введите номера ещё раз.");
+                    continue;
+                }
+
+                string normalizedInput =
+                    dlcInput
+                        .Replace(',', ' ')
+                        .Replace(';', ' ');
+
+                string[] tokens =
+                    normalizedInput.Split(
+                        new[] { ' ', '\t' },
+                        StringSplitOptions.RemoveEmptyEntries);
+
+                if (tokens.Length == 1 && tokens[0] == "0")
+                    break;
+
+                var selectedNumbers =
+                    new HashSet<int>();
+
+                bool valid = true;
+
+                foreach (string token in tokens)
+                {
+                    if (!int.TryParse(
+                            token,
+                            out int number) ||
+                        number < 1 ||
+                        number > availableDlcs.Count)
+                    {
+                        valid = false;
+                        break;
+                    }
+
+                    selectedNumbers.Add(number);
+                }
+
+                if (!valid ||
+                    selectedNumbers.Count == 0)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine(
+                        "✗ Неправильный ввод DLC.");
+                    Console.WriteLine(
+                        "  Используйте номера из списка, " +
+                        "например: 1 3");
+                    Console.WriteLine();
+                    continue;
+                }
+
+                foreach (int number in selectedNumbers)
+                {
+                    SteamDlcInfo dlc =
+                        availableDlcs[number - 1];
+
+                    foreach (uint depotId in
+                             dlc.DepotIds
+                                .Append(dlc.AppId)
+                                .Distinct())
+                    {
+                        if (IsDlcDepotAllowed(
+                                dlc,
+                                depotId))
+                        {
+                            selectedDlcDepotIds.Add(
+                                depotId);
+                        }
+                    }
+                }
+
+                Console.WriteLine();
+                Console.WriteLine("✓ Выбраны DLC:");
+
+                foreach (int number in selectedNumbers)
+                {
+                    Console.WriteLine(
+                        $"  {number}. " +
+                        $"{availableDlcs[number - 1].Name}");
+                }
+
+                break;
+            }
+        }
+    }
+
+    // --------------------------------------------------------
+    // Объединяем depot'ы игры и выбранных DLC.
+    // --------------------------------------------------------
+
+    var downloadDepots =
+        new List<SteamDepotInfo>(depots);
+
+    foreach (uint depotId in selectedDlcDepotIds)
+    {
+        if (downloadDepots.Any(
+                x => x.DepotId == depotId))
+        {
+            continue;
+        }
+
+        if (allLuaDepots.TryGetValue(
+                depotId,
+                out SteamDepotInfo? dlcDepot))
+        {
+            downloadDepots.Add(dlcDepot);
+        }
     }
 
     Console.WriteLine();
+    Console.WriteLine(
+        $"✓ Depot'ов основной игры: {depots.Count}");
+    Console.WriteLine(
+        $"✓ Depot'ов DLC добавлено: " +
+        $"{downloadDepots.Count - depots.Count}");
+    Console.WriteLine();
+
+    if (downloadDepots.Count == 0)
+    {
+        Console.WriteLine(
+            "✗ Нечего скачивать: не выбрана ни игра, ни DLC.");
+
+        await PauseAsync();
+        return;
+    }
+
+    // --------------------------------------------------------
+    // Название игры
+    // --------------------------------------------------------
+
     Console.WriteLine("Получаем название игры...");
 
     string? gameName =
@@ -707,27 +1358,6 @@ async Task DownloadMenuAsync()
     Console.WriteLine("Папка игры:");
     Console.WriteLine($"  {gameDirectory}");
 
-    // --------------------------------------------------------
-    // Manifest
-    // --------------------------------------------------------
-
-    var manifestPaths = Directory
-        .GetFiles(
-            sourceDirectory,
-            "*.manifest",
-            SearchOption.TopDirectoryOnly)
-        .ToList();
-
-    if (manifestPaths.Count == 0)
-    {
-        Console.WriteLine();
-        Console.WriteLine(
-            "✗ В папке не найдено manifest-файлов.");
-
-        await PauseAsync();
-        return;
-    }
-
     var downloads =
         new List<(SteamDepotInfo Depot, string ManifestPath)>();
 
@@ -754,7 +1384,7 @@ async Task DownloadMenuAsync()
         }
 
         var depot =
-            depots.FirstOrDefault(
+            downloadDepots.FirstOrDefault(
                 x => x.DepotId == depotId);
 
         if (depot == null)
@@ -1290,6 +1920,30 @@ static bool DepotOsMatches(
          value == "win") ||
         (selectedOs == "linux" &&
          value == "linux64"));
+}
+
+static string FormatDepotPlatform(DepotPlatform platform)
+{
+    if (platform == DepotPlatform.Unknown)
+        return "неизвестно";
+
+    if (platform == DepotPlatform.Shared)
+        return "общий";
+
+    var names = new List<string>();
+
+    if ((platform & DepotPlatform.Windows) != 0)
+        names.Add("Windows");
+
+    if ((platform & DepotPlatform.Linux) != 0)
+        names.Add("Linux");
+
+    if ((platform & DepotPlatform.MacOS) != 0)
+        names.Add("macOS");
+
+    return names.Count == 0
+        ? "неизвестно"
+        : string.Join(", ", names);
 }
 
 static string FormatDepotOs(string osList)

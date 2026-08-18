@@ -61,28 +61,24 @@ public static class CdnTest
         }
 
         Console.WriteLine($"✓ Файлов в manifest: {manifest.Files.Count}");
-        Console.WriteLine();
-        Console.WriteLine("Проверяем существующие файлы...");
 
         var steamContent = steamClient.GetHandler<SteamContent>();
-
-        Console.WriteLine("Получаем CDN-серверы...");
 
         var cdnServers =
             await steamContent.GetServersForSteamPipe(
                 null,
                 10);
 
-        if (cdnServers == null || cdnServers.Count == 0)
+        if (cdnServers.Count == 0)
         {
             throw new IOException(
-                "Steam не вернул CDN-серверы.");
+                "Список CDN-серверов пуст.");
         }
 
         var serverList =
-            cdnServers
-                .Where(x => !string.IsNullOrWhiteSpace(x.Host))
-                .ToList();
+    cdnServers
+        .Where(x => !string.IsNullOrWhiteSpace(x.Host))
+        .ToList();
 
         if (serverList.Count == 0)
         {
@@ -104,6 +100,16 @@ public static class CdnTest
             $"✓ CDN: {cdnServer.Host}:{cdnServer.Port}");
 
         byte[] depotKeyBytes = Convert.FromHexString(depot.DepotKey);
+
+        // В некоторых manifest'ах Steam имена файлов зашифрованы.
+        // До использования FileName как пути их обязательно нужно расшифровать.
+        if (manifest.FilenamesEncrypted)
+        {
+            Console.WriteLine("Расшифровываем имена файлов manifest...");
+            manifest.DecryptFilenames(depotKeyBytes);
+            Console.WriteLine("✓ Имена файлов расшифрованы.");
+            Console.WriteLine();
+        }
 
         using var cdnClient = new Client(steamClient);
 
@@ -226,9 +232,20 @@ public static class CdnTest
 
                     Interlocked.Increment(ref session.CompletedFiles);
 
+                    PrintSkipped(
+                        manifestNumber,
+                        manifestCount,
+                        currentFileNumber,
+                        session.TotalFiles,
+                        file.FileName,
+                        session);
+
                     continue;
                 }
 
+                Console.WriteLine();
+                Console.WriteLine(
+                    $"⚠ Файл отличается от manifest, перекачиваем: {file.FileName}");
             }
 
             string tempPath = outputPath + ".downloading";
@@ -395,11 +412,6 @@ public static class CdnTest
         // 3. Запускаем 20 workers. Они берут chunks из общей очереди.
         // ------------------------------------------------------------
 
-        // Подготовка полностью закончена.
-        // Теперь очищаем весь предыдущий вывод и начинаем чистый экран загрузки.
-        Console.Clear();
-        Console.CursorVisible = false;
-
         var workers = Enumerable
             .Range(
                 0,
@@ -409,18 +421,11 @@ public static class CdnTest
             .Select(_ => WorkerAsync())
             .ToArray();
 
-        // Сразу рисуем первый кадр.
-        PrintOverallProgress(
-            manifestNumber,
-            manifestCount,
-            preparedFiles,
-            session,
-            parallelDownloads);
+        // Пока workers скачивают chunks, обновляем одну строку.
+        Console.Clear();
+        Console.CursorVisible = false;
 
-        // Продолжаем обновлять экран, пока реально работают workers.
-        var workersTask = Task.WhenAll(workers);
-
-        while (!workersTask.IsCompleted &&
+        while (!allChunks.IsEmpty &&
                !cancellation.IsCancellationRequested)
         {
             PrintOverallProgress(
@@ -435,7 +440,7 @@ public static class CdnTest
 
         try
         {
-            await workersTask;
+            await Task.WhenAll(workers);
         }
         catch
         {
@@ -593,6 +598,54 @@ public static class CdnTest
         }
     }
 
+    private static void PrintSkipped(
+        int manifestNumber,
+        int manifestCount,
+        long fileNumber,
+        long totalFiles,
+        string fileName,
+        DownloadSession session)
+    {
+        double totalPercent =
+            session.TotalExpected == 0
+                ? 100
+                : session.TotalDownloaded * 100.0 /
+                  (double)session.TotalExpected;
+
+        double speed = 0;
+
+        if (session.Stopwatch.Elapsed.TotalSeconds > 0)
+        {
+            speed =
+                session.TotalDownloaded /
+                session.Stopwatch.Elapsed.TotalSeconds;
+        }
+
+        TimeSpan eta = TimeSpan.Zero;
+
+        if (speed > 0)
+        {
+            double remaining =
+                Math.Max(
+                    0,
+                    (double)session.TotalExpected -
+                    session.TotalDownloaded);
+
+            eta = TimeSpan.FromSeconds(
+                remaining / speed);
+        }
+
+        string line =
+            $"[{manifestNumber}/{manifestCount}] " +
+            $"[{fileNumber}/{totalFiles}] " +
+            $"✓ Проверен: {fileName} | " +
+            $"Всего {totalPercent:F1}% | " +
+            $"Скорость {FormatSize((ulong)Math.Max(0, speed))}/s | " +
+            $"Осталось {FormatTime(eta)}";
+
+        PrintLine(line);
+    }
+
     private static void PrintOverallProgress(
         int manifestNumber,
         int manifestCount,
@@ -667,24 +720,8 @@ public static class CdnTest
             new string('█', filled) +
             new string('░', barWidth - filled);
 
-        int consoleWidth;
-
         try
         {
-            consoleWidth = Math.Max(Console.WindowWidth - 1, 80);
-        }
-        catch
-        {
-            consoleWidth = 120;
-        }
-
-        try
-        {
-            Console.SetCursorPosition(0, 0);
-
-            for (int i = 0; i < 18; i++)
-                Console.WriteLine(new string(' ', consoleWidth));
-
             Console.SetCursorPosition(0, 0);
         }
         catch
