@@ -14,7 +14,7 @@ public static class SteamLuaParser
     {
         if (!File.Exists(luaPath))
             throw new FileNotFoundException(
-                "Lua-файл не найден.",
+                "Lua-пїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.",
                 luaPath);
 
         string text = File.ReadAllText(luaPath);
@@ -22,7 +22,7 @@ public static class SteamLuaParser
         // =====================================================
         // AppID
         //
-        // Первый addappid без ключа:
+        // пїЅпїЅпїЅпїЅпїЅпїЅ addappid пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ:
         //
         // addappid(541570)
         // =====================================================
@@ -34,13 +34,13 @@ public static class SteamLuaParser
 
         if (!appMatch.Success)
             throw new Exception(
-                "Не удалось найти AppID в Lua-файле.");
+                "пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ AppID пїЅ Lua-пїЅпїЅпїЅпїЅпїЅ.");
 
         uint appId = uint.Parse(
             appMatch.Groups[1].Value);
 
         // =====================================================
-        // Читаем все depot + ключи
+        // пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ depot + пїЅпїЅпїЅпїЅпїЅ
         //
         // addappid(541574,0,"KEY")
         // =====================================================
@@ -52,7 +52,7 @@ public static class SteamLuaParser
 
         if (depotMatches.Count == 0)
             throw new Exception(
-                "Не удалось найти depot'ы с ключами в Lua-файле.");
+                "пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ depot'пїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ Lua-пїЅпїЅпїЅпїЅпїЅ.");
 
         var depots = new Dictionary<uint, SteamDepotInfo>();
 
@@ -73,7 +73,7 @@ public static class SteamLuaParser
         }
 
         // =====================================================
-        // Читаем все ManifestID
+        // пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ ManifestID
         //
         // setManifestid(541574,"7789652124095821521")
         // =====================================================
@@ -106,33 +106,26 @@ public static class SteamLuaParser
         }
 
         // =====================================================
-        // Проверяем
+        // пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ
         // =====================================================
 
-        foreach (var depot in depots.Values)
-        {
-            if (depot.ManifestId == 0)
-            {
-                throw new Exception(
-                    $"Для DepotID {depot.DepotId} " +
-                    $"не найден ManifestID.");
-            }
-        }
+        // Depot without setManifestid is kept for later validation.
+        // Program will compare it with Steam and local manifests.
 
         return depots.Values
             .OrderBy(x => x.DepotId)
             .ToList();
     }
 
-    // Старый метод оставляем,
-    // чтобы другой код проекта не сломался.
+    // пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ,
+    // пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ.
     public static SteamDepotInfo Parse(string luaPath)
     {
         var depots = ParseAll(luaPath);
 
         if (depots.Count == 0)
             throw new Exception(
-                "В Lua не найдено ни одного depot.");
+                "пїЅ Lua пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ depot.");
 
         return depots[0];
     }

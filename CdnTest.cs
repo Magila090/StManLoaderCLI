@@ -9,7 +9,14 @@ public sealed class DownloadSession
     public long TotalFiles { get; init; }
     public ulong TotalExpected { get; init; }
     public long TotalDownloaded;
-    public long CompletedFiles;
+
+    // Файлы текущего manifest, которые полностью скачаны,
+    // но ещё не проверены.
+    public long DownloadedFiles;
+
+    // Все файлы, успешно прошедшие проверку.
+    public long VerifiedFiles;
+
     public Stopwatch Stopwatch { get; } = Stopwatch.StartNew();
 }
 
@@ -48,6 +55,9 @@ public static class CdnTest
             $"=== MANIFEST {manifestNumber}/{manifestCount} | DEPOT {depot.DepotId} ===");
         Console.WriteLine($"ManifestID: {depot.ManifestId}");
         Console.WriteLine();
+
+        // Счётчик загруженных файлов относится только к текущему manifest.
+        Interlocked.Exchange(ref session.DownloadedFiles, 0);
 
         Directory.CreateDirectory(outputDirectory);
 
@@ -230,7 +240,7 @@ public static class CdnTest
                         ref session.TotalDownloaded,
                         checked((long)file.TotalSize));
 
-                    Interlocked.Increment(ref session.CompletedFiles);
+                    Interlocked.Increment(ref session.VerifiedFiles);
 
                     PrintSkipped(
                         manifestNumber,
@@ -318,6 +328,8 @@ public static class CdnTest
                     var prepared = work.PreparedFile;
                     var chunk = work.Chunk;
 
+                    int chunkCount = prepared.File.Chunks.Count;
+
                     byte[] destination = new byte[
                         checked((int)chunk.UncompressedLength)];
 
@@ -360,8 +372,17 @@ public static class CdnTest
                                 ref session.TotalDownloaded,
                                 written);
 
-                            Interlocked.Increment(
-                                ref prepared.CompletedChunks);
+                            int completedChunks =
+                                Interlocked.Increment(
+                                    ref prepared.CompletedChunks);
+
+                            // Все chunks файла скачаны — файл считается
+                            // загруженным, но ещё не проверенным.
+                            if (completedChunks == chunkCount)
+                            {
+                                Interlocked.Increment(
+                                    ref session.DownloadedFiles);
+                            }
 
                             lastException = null;
 
@@ -473,8 +494,13 @@ public static class CdnTest
         }
 
         // ------------------------------------------------------------
-        // 4. Все chunks скачаны. Теперь проверяем каждый файл целиком.
-        //    Только после SHA-1 он становится настоящим файлом.
+        // 4. Все chunks скачаны. Проверяем файлы по одному.
+        //
+        //    ВАЖНО:
+        //    После успешной проверки каждого файла сразу заменяем
+        //    .downloading на настоящий файл. Поэтому готовые файлы
+        //    появляются в папке сразу, не дожидаясь завершения
+        //    всего manifest.
         // ------------------------------------------------------------
 
         foreach (var prepared in preparedFiles)
@@ -513,11 +539,8 @@ public static class CdnTest
 
             if (!hashOk)
             {
-                foreach (var item in preparedFiles)
-                {
-                    if (File.Exists(item.TempPath))
-                        File.Delete(item.TempPath);
-                }
+                if (File.Exists(prepared.TempPath))
+                    File.Delete(prepared.TempPath);
 
                 long downloadedByManifest =
                     preparedFiles.Sum(x => x.Downloaded);
@@ -530,30 +553,28 @@ public static class CdnTest
                     $"SHA-1 не совпадает с manifest: " +
                     prepared.File.FileName);
             }
-        }
 
-        // ------------------------------------------------------------
-        // 5. Только после успешной проверки всех файлов заменяем
-        //    временные файлы настоящими.
-        // ------------------------------------------------------------
-
-        foreach (var prepared in preparedFiles)
-        {
+            // Файл полностью скачан и проверен — сразу делаем его
+            // обычным файлом в папке назначения.
             File.Move(
                 prepared.TempPath,
                 prepared.OutputPath,
                 true);
 
             Interlocked.Increment(
-                ref session.CompletedFiles);
-        }
+                ref session.VerifiedFiles);
 
-        PrintOverallProgress(
-            manifestNumber,
-            manifestCount,
-            preparedFiles,
-            session,
-            parallelDownloads);
+            Console.WriteLine();
+            Console.WriteLine(
+                $"✓ Файл готов: {prepared.File.FileName}");
+
+            PrintOverallProgress(
+                manifestNumber,
+                manifestCount,
+                preparedFiles,
+                session,
+                parallelDownloads);
+        }
 
         Console.WriteLine();
         Console.WriteLine(
@@ -743,7 +764,10 @@ public static class CdnTest
             $"Manifest: {manifestNumber} / {manifestCount}");
 
         Console.WriteLine(
-            $"Файлов:   {session.CompletedFiles} / {session.TotalFiles}");
+            $"Проверено файлов: {session.VerifiedFiles} / {session.TotalFiles}");
+
+        Console.WriteLine(
+            $"Загружено файлов: {session.DownloadedFiles} / {preparedFiles.Count}");
 
         Console.WriteLine();
 

@@ -10,6 +10,9 @@ public sealed class SteamDlcInfo
 
     // OS для depot'ов этого DLC: windows / macos / linux / пусто = общий.
     public Dictionary<uint, string> DepotOs { get; set; } = new();
+
+    // Public manifest ID для каждого depot из App Info DLC.
+    public Dictionary<uint, ulong> DepotManifests { get; set; } = new();
 }
 
 public static class SteamDlcResolver
@@ -161,6 +164,9 @@ public static class SteamDlcResolver
                     var depotOs =
                         new Dictionary<uint, string>();
 
+                    var depotManifests =
+                        new Dictionary<uint, ulong>();
+
                     var depots =
                         dlcInfo.KeyValues["depots"];
 
@@ -193,6 +199,30 @@ public static class SteamDlcResolver
                             }
 
                             depotOs[depotId] = osList ?? "";
+
+                            // Steam может хранить public manifest как:
+                            // manifests/public/gid
+                            // либо напрямую в manifests/public.
+                            var manifests = depotNode["manifests"];
+                            if (manifests != null)
+                            {
+                                var publicNode = manifests["public"];
+
+                                if (publicNode != null)
+                                {
+                                    string manifestValue =
+                                        publicNode["gid"]?.AsString()
+                                        ?? publicNode.AsString();
+
+                                    if (ulong.TryParse(
+                                            manifestValue,
+                                            out ulong manifestId) &&
+                                        manifestId != 0)
+                                    {
+                                        depotManifests[depotId] = manifestId;
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -220,7 +250,8 @@ public static class SteamDlcResolver
                             AppId = dlcAppId,
                             Name = name,
                             DepotIds = depotIds,
-                            DepotOs = depotOs
+                            DepotOs = depotOs,
+                            DepotManifests = depotManifests
                         });
                 }
             }
