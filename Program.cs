@@ -12,6 +12,8 @@ Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 AppConfig config = ConfigManager.Load();
 
+const string ryuuAuthKey = "???"; // Вставьте свой ключ
+
 string? downloadDirectory =
     config.DownloadDirectory;
 
@@ -43,7 +45,7 @@ async Task MainMenuAsync()
         Console.Clear();
 
         Console.WriteLine("╔════════════════════════════════════════════╗");
-        Console.WriteLine("║          My Steam Downloader               ║");
+        Console.WriteLine("║              StManLoaderCLI                ║");
         Console.WriteLine("╚════════════════════════════════════════════╝");
         Console.WriteLine();
 
@@ -74,7 +76,8 @@ async Task MainMenuAsync()
         Console.WriteLine("3. Скачать");
         Console.WriteLine("4. Параллельность");
         Console.WriteLine("5. Операционная система");
-        Console.WriteLine("6. Выход");
+        Console.WriteLine("6. Папка манифестов");
+        Console.WriteLine("7. Выход");
         Console.WriteLine();
         Console.WriteLine("────────────────────────────────────────────");
         Console.WriteLine();
@@ -106,6 +109,10 @@ async Task MainMenuAsync()
                 break;
 
             case "6":
+                ManifestFolderMenu();
+                break;
+
+            case "7":
                 return;
 
             default:
@@ -436,6 +443,134 @@ void OsMenu()
 
 
 // ============================================================
+// ПАПКА МАНИФЕСТОВ
+// ============================================================
+
+void ManifestFolderMenu()
+{
+    while (true)
+    {
+        Console.Clear();
+
+        Console.WriteLine("╔════════════════════════════════════════════╗");
+        Console.WriteLine("║             Папка манифестов               ║");
+        Console.WriteLine("╚════════════════════════════════════════════╝");
+        Console.WriteLine();
+
+        Console.WriteLine(
+            $"После успешного скачивания: {(config.DeleteManifestsAfterDownload ? "удалять" : "оставлять")}");
+
+        if (!config.DeleteManifestsAfterDownload)
+        {
+            Console.WriteLine(
+                $"Папка для хранения: {config.ManifestKeepDirectory ?? "не задана"}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("1. Удалять папку после скачивания");
+        Console.WriteLine("2. Оставлять папку после скачивания");
+        Console.WriteLine("3. Изменить папку хранения");
+        Console.WriteLine("4. Назад");
+        Console.WriteLine();
+        Console.Write("Выберите действие: ");
+
+        string? choice = Console.ReadLine();
+
+        switch (choice)
+        {
+            case "1":
+                config.DeleteManifestsAfterDownload = true;
+                ConfigManager.Save(config);
+
+                Console.WriteLine();
+                Console.WriteLine("✓ Папка manifest будет удаляться после успешного скачивания.");
+                Pause();
+                break;
+
+            case "2":
+                if (string.IsNullOrWhiteSpace(config.ManifestKeepDirectory))
+                {
+                    Console.WriteLine();
+                    Console.Write("Введите папку, куда сохранять manifest: ");
+                    string? path = Console.ReadLine();
+
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine("✗ Папка не указана.");
+                        Pause();
+                        break;
+                    }
+
+                    try
+                    {
+                        path = Path.GetFullPath(path.Trim());
+                        Directory.CreateDirectory(path);
+                        config.ManifestKeepDirectory = path;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine($"✗ Не удалось создать папку: {ex.Message}");
+                        Pause();
+                        break;
+                    }
+                }
+
+                config.DeleteManifestsAfterDownload = false;
+                ConfigManager.Save(config);
+
+                Console.WriteLine();
+                Console.WriteLine("✓ Папка manifest будет сохраняться после успешного скачивания.");
+                Console.WriteLine($"  Папка: {config.ManifestKeepDirectory}");
+                Pause();
+                break;
+
+            case "3":
+                Console.WriteLine();
+                Console.WriteLine(
+                    $"Текущая папка: {config.ManifestKeepDirectory ?? "не задана"}");
+                Console.Write("Новая папка или Enter для отмены: ");
+
+                string? newPath = Console.ReadLine();
+
+                if (string.IsNullOrWhiteSpace(newPath))
+                    break;
+
+                try
+                {
+                    newPath = Path.GetFullPath(newPath.Trim());
+                    Directory.CreateDirectory(newPath);
+                    config.ManifestKeepDirectory = newPath;
+                    ConfigManager.Save(config);
+
+                    Console.WriteLine();
+                    Console.WriteLine("✓ Папка хранения сохранена:");
+                    Console.WriteLine(newPath);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine($"✗ Не удалось создать папку: {ex.Message}");
+                }
+
+                Pause();
+                break;
+
+            case "4":
+                return;
+
+            default:
+                Console.WriteLine();
+                Console.WriteLine("✗ Неизвестный пункт.");
+                Pause();
+                break;
+        }
+    }
+}
+
+
+// ============================================================
 // СКАЧИВАНИЕ
 // ============================================================
 
@@ -460,20 +595,95 @@ async Task DownloadMenuAsync()
     Console.WriteLine($"  {downloadDirectory}");
     Console.WriteLine();
 
-    Console.Write("Папка с Lua и manifest: ");
+    Console.Write("Путь к папке или AppID: ");
 
-    string? sourceDirectory = Console.ReadLine();
+string? sourceInput = Console.ReadLine();
 
-    if (string.IsNullOrWhiteSpace(sourceDirectory))
+if (string.IsNullOrWhiteSpace(sourceInput))
+{
+    Console.WriteLine();
+    Console.WriteLine("✗ Путь или AppID не указан.");
+    await PauseAsync();
+    return;
+}
+
+sourceInput = sourceInput.Trim();
+
+string sourceDirectory;
+bool temporaryManifestDirectory = false;
+
+// --------------------------------------------------------
+// AppID или путь?
+// --------------------------------------------------------
+
+if (uint.TryParse(sourceInput, out uint requestedAppId))
+{
+    // Пользователь ввёл AppID.
+    // Создаём временную папку рядом с каталогом загрузок.
+    sourceDirectory =
+        Path.Combine(
+            downloadDirectory!,
+            $"Manifest_{requestedAppId}");
+
+    temporaryManifestDirectory = true;
+
+    Console.WriteLine();
+    Console.WriteLine($"✓ Обнаружен AppID: {requestedAppId}");
+    Console.WriteLine(
+        $"Временная папка manifest: {sourceDirectory}");
+
+    try
+    {
+        // На всякий случай удаляем старую папку
+        // с таким же AppID перед новой загрузкой.
+        if (Directory.Exists(sourceDirectory))
+        {
+            Directory.Delete(
+                sourceDirectory,
+                recursive: true);
+        }
+
+        Directory.CreateDirectory(sourceDirectory);
+
+        var ryuu =
+            new RyuuApiClient(ryuuAuthKey);
+
+        await ryuu.DownloadManifestPackAsync(
+            requestedAppId,
+            sourceDirectory);
+    }
+    catch (Exception ex)
     {
         Console.WriteLine();
-        Console.WriteLine("✗ Папка не указана.");
+        Console.WriteLine(
+            $"✗ Не удалось получить manifest-пакет: {ex.Message}");
+
+        // Если это наша временная папка,
+        // удаляем её даже при ошибке получения.
+        try
+        {
+            if (Directory.Exists(sourceDirectory))
+            {
+                Directory.Delete(
+                    sourceDirectory,
+                    recursive: true);
+            }
+        }
+        catch
+        {
+            // Здесь специально ничего не выводим,
+            // чтобы не скрывать первоначальную ошибку.
+        }
+
         await PauseAsync();
         return;
     }
-
+}
+else
+{
+    // Пользователь ввёл обычный путь.
     sourceDirectory =
-        Path.GetFullPath(sourceDirectory.Trim());
+        Path.GetFullPath(sourceInput);
 
     if (!Directory.Exists(sourceDirectory))
     {
@@ -484,6 +694,12 @@ async Task DownloadMenuAsync()
         await PauseAsync();
         return;
     }
+
+    Console.WriteLine();
+    Console.WriteLine(
+        $"✓ Используем существующую папку:");
+    Console.WriteLine($"  {sourceDirectory}");
+}
 
     // --------------------------------------------------------
     // Lua
@@ -596,60 +812,76 @@ async Task DownloadMenuAsync()
     }
 
     // depotId -> путь к manifest.
-    var localManifestPaths =
-        new Dictionary<uint, (string Path, ulong ManifestId)>();
+    // depotId -> локальный manifest.
+// ManifestID берём непосредственно из имени файла.
+// Это важно, потому что Lua может содержать устаревший ManifestID.
+var localManifestPaths =
+    new Dictionary<uint, (string Path, ulong ManifestId)>();
 
-    foreach (string manifestPath in manifestPaths)
+foreach (string manifestPath in manifestPaths)
+{
+    string fileName =
+        Path.GetFileNameWithoutExtension(manifestPath);
+
+    string[] parts =
+        fileName.Split('_');
+
+    if (parts.Length < 2 ||
+        !uint.TryParse(
+            parts[0],
+            out uint depotId) ||
+        !ulong.TryParse(
+            parts[1],
+            out ulong manifestId))
     {
-        string fileName =
-            Path.GetFileNameWithoutExtension(manifestPath);
+        Console.WriteLine(
+            $"⚠ Пропускаем manifest с неправильным именем: " +
+            $"{Path.GetFileName(manifestPath)}");
 
-        string[] parts =
-            fileName.Split('_');
-
-        if (parts.Length < 2 ||
-            !uint.TryParse(
-                parts[0],
-                out uint depotId) ||
-            !ulong.TryParse(
-                parts[1],
-                out ulong manifestId))
-        {
-            Console.WriteLine(
-                $"⚠ Пропускаем manifest с неправильным именем: " +
-                $"{Path.GetFileName(manifestPath)}");
-
-            continue;
-        }
-
-        if (!allLuaDepots.TryGetValue(
-                depotId,
-                out SteamDepotInfo? luaDepot))
-        {
-            Console.WriteLine(
-                $"⚠ Manifest {Path.GetFileName(manifestPath)} " +
-                $"не относится к depot из Lua.");
-
-            continue;
-        }
-
-        if (luaDepot.ManifestId != manifestId)
-        {
-            Console.WriteLine(
-                $"⚠ ManifestID не совпадает для depot {depotId}: " +
-                $"{Path.GetFileName(manifestPath)}");
-
-            continue;
-        }
-
-        localManifestPaths[depotId] =
-            (manifestPath, manifestId);
+        continue;
     }
 
-    Console.WriteLine();
-    Console.WriteLine(
-        $"✓ Подготовлено локальных manifest: " +
-        $"{localManifestPaths.Count}/{manifestPaths.Count}");
+    if (!allLuaDepots.TryGetValue(
+            depotId,
+            out SteamDepotInfo? luaDepot))
+    {
+        Console.WriteLine(
+            $"⚠ Manifest {Path.GetFileName(manifestPath)} " +
+            $"не относится к depot из Lua.");
+
+        continue;
+    }
+
+    // Lua может содержать устаревший ManifestID.
+    // Сам файл считаем источником истины, потому что его имя
+    // содержит фактический ManifestID этого локального manifest.
+    if (luaDepot.ManifestId != manifestId)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            $"⚠ ManifestID не совпадает для depot {depotId}:");
+        Console.WriteLine(
+            $"  Lua:  {luaDepot.ManifestId}");
+        Console.WriteLine(
+            $"  Файл: {manifestId}");
+        Console.WriteLine(
+            $"  → Используем ManifestID из файла.");
+    }
+    else
+    {
+        Console.WriteLine(
+            $"✓ Manifest совпадает: " +
+            $"{depotId} → {manifestId}");
+    }
+
+    localManifestPaths[depotId] =
+        (manifestPath, manifestId);
+}
+
+Console.WriteLine();
+Console.WriteLine(
+    $"✓ Подготовлено локальных manifest: " +
+    $"{localManifestPaths.Count}/{manifestPaths.Count}");
 
     // --------------------------------------------------------
     // Получаем DLC из Steam.
@@ -913,19 +1145,10 @@ async Task DownloadMenuAsync()
         var expected = GetRequiredGameDepots();
 
         var missing = expected
-            .Where(expectedDepot =>
-            {
-                if (!localManifestPaths.TryGetValue(
-                        expectedDepot.DepotId,
-                        out var local))
-                {
-                    return true;
-                }
-
-                return local.ManifestId !=
-                       expectedDepot.PublicManifestId;
-            })
-            .ToList();
+    .Where(expectedDepot =>
+        !localManifestPaths.ContainsKey(
+            expectedDepot.DepotId))
+    .ToList();
 
         return (expected, missing);
     }
@@ -983,19 +1206,10 @@ async Task DownloadMenuAsync()
         // заменяет отсутствующий OS-specific depot при проверке полноты.
 
         var missing = expected
-            .Where(expectedDepot =>
-            {
-                if (!localManifestPaths.TryGetValue(
-                        expectedDepot.DepotId,
-                        out var local))
-                {
-                    return true;
-                }
-
-                return local.ManifestId !=
-                       expectedDepot.PublicManifestId;
-            })
-            .ToList();
+    .Where(expectedDepot =>
+        !localManifestPaths.ContainsKey(
+            expectedDepot.DepotId))
+    .ToList();
 
         return (expected, missing);
     }
@@ -1365,6 +1579,7 @@ async Task DownloadMenuAsync()
             Console.WriteLine();
             Console.WriteLine(
                 "Введите номера DLC через пробел или запятую.");
+            Console.WriteLine("all — скачать все DLC.");
             Console.WriteLine("0 — не скачивать DLC.");
             Console.WriteLine("Например: 1 3");
             Console.WriteLine();
@@ -1375,58 +1590,70 @@ async Task DownloadMenuAsync()
 
                 string? dlcInput = Console.ReadLine();
 
-                if (string.IsNullOrWhiteSpace(dlcInput))
-                {
-                    Console.WriteLine(
-                        "✗ Неправильный ввод DLC. Введите номера ещё раз.");
-                    continue;
-                }
+if (string.IsNullOrWhiteSpace(dlcInput))
+{
+    Console.WriteLine(
+        "✗ Неправильный ввод DLC. Введите номера ещё раз.");
+    continue;
+}
 
-                string normalizedInput =
-                    dlcInput
-                        .Replace(',', ' ')
-                        .Replace(';', ' ');
+var selectedNumbers =
+    new HashSet<int>();
 
-                string[] tokens =
-                    normalizedInput.Split(
-                        new[] { ' ', '\t' },
-                        StringSplitOptions.RemoveEmptyEntries);
+if (dlcInput.Trim().Equals(
+        "all",
+        StringComparison.OrdinalIgnoreCase))
+{
+    foreach (int number in
+             Enumerable.Range(1, availableDlcs.Count))
+    {
+        selectedNumbers.Add(number);
+    }
+}
+else
+{
+    string normalizedInput =
+        dlcInput
+            .Replace(',', ' ')
+            .Replace(';', ' ');
 
-                if (tokens.Length == 1 && tokens[0] == "0")
-                    break;
+    string[] tokens =
+        normalizedInput.Split(
+            new[] { ' ', '\t' },
+            StringSplitOptions.RemoveEmptyEntries);
 
-                var selectedNumbers =
-                    new HashSet<int>();
+    if (tokens.Length == 1 && tokens[0] == "0")
+        break;
 
-                bool valid = true;
+    bool valid = true;
 
-                foreach (string token in tokens)
-                {
-                    if (!int.TryParse(
-                            token,
-                            out int number) ||
-                        number < 1 ||
-                        number > availableDlcs.Count)
-                    {
-                        valid = false;
-                        break;
-                    }
+    foreach (string token in tokens)
+    {
+        if (!int.TryParse(
+                token,
+                out int number) ||
+            number < 1 ||
+            number > availableDlcs.Count)
+        {
+            valid = false;
+            break;
+        }
 
-                    selectedNumbers.Add(number);
-                }
+        selectedNumbers.Add(number);
+    }
 
-                if (!valid ||
-                    selectedNumbers.Count == 0)
-                {
-                    Console.WriteLine();
-                    Console.WriteLine(
-                        "✗ Неправильный ввод DLC.");
-                    Console.WriteLine(
-                        "  Используйте номера из списка, " +
-                        "например: 1 3");
-                    Console.WriteLine();
-                    continue;
-                }
+    if (!valid ||
+        selectedNumbers.Count == 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            "✗ Неправильный ввод DLC.");
+        Console.WriteLine(
+            "  Используйте номера из списка, например: 1 3");
+        Console.WriteLine();
+        continue;
+    }
+}
 
                 var approvedDlcNumbers =
                     new HashSet<int>();
@@ -1687,15 +1914,6 @@ async Task DownloadMenuAsync()
             continue;
         }
 
-        if (depot.ManifestId != manifestId)
-        {
-            Console.WriteLine(
-                $"⚠ ManifestID не совпадает: " +
-                $"{Path.GetFileName(manifestPath)}");
-
-            continue;
-        }
-
         downloads.Add(
             (depot, manifestPath));
     }
@@ -1889,7 +2107,112 @@ async Task DownloadMenuAsync()
     Console.WriteLine("Папка игры:");
     Console.WriteLine(gameDirectory);
 
+    // --------------------------------------------------------
+    // Обработка временной папки manifest после успешного скачивания.
+    // Папку, указанную пользователем вручную, не трогаем.
+    // --------------------------------------------------------
+
+    if (temporaryManifestDirectory)
+    {
+        if (downloadFailed)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "⚠ Папка manifest оставлена, потому что загрузка завершилась с ошибкой.");
+        }
+        else if (config.DeleteManifestsAfterDownload)
+        {
+            try
+            {
+                if (Directory.Exists(sourceDirectory))
+                {
+                    Directory.Delete(
+                        sourceDirectory,
+                        recursive: true);
+
+                    Console.WriteLine();
+                    Console.WriteLine(
+                        "✓ Временная папка manifest удалена.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine();
+                Console.WriteLine(
+                    $"⚠ Не удалось удалить временную папку manifest: {ex.Message}");
+            }
+        }
+        else
+        {
+            try
+            {
+                string? keepDirectory =
+                    config.ManifestKeepDirectory;
+
+                if (string.IsNullOrWhiteSpace(keepDirectory))
+                    throw new InvalidOperationException(
+                        "Не задана папка хранения manifest.");
+
+                keepDirectory = Path.GetFullPath(keepDirectory);
+                Directory.CreateDirectory(keepDirectory);
+
+                string baseName = $"Manifest_{appId}";
+                string targetDirectory =
+                    GetUniqueManifestDirectory(
+                        keepDirectory,
+                        baseName);
+
+                // Если папка хранения совпала с родительской папкой
+                // временного manifest-каталога, targetDirectory будет
+                // отличаться суффиксом и перенос останется безопасным.
+                Directory.Move(
+                    sourceDirectory,
+                    targetDirectory);
+
+                Console.WriteLine();
+                Console.WriteLine(
+                    "✓ Папка manifest сохранена:");
+                Console.WriteLine(targetDirectory);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine();
+                Console.WriteLine(
+                    $"⚠ Не удалось перенести папку manifest: {ex.Message}");
+                Console.WriteLine(
+                    $"  Исходная папка оставлена: {sourceDirectory}");
+            }
+        }
+    }
+
     await PauseAsync();
+}
+
+
+static string GetUniqueManifestDirectory(
+    string parentDirectory,
+    string baseName)
+{
+    string candidate =
+        Path.Combine(parentDirectory, baseName);
+
+    if (!Directory.Exists(candidate))
+        return candidate;
+
+    int index = 1;
+
+    while (true)
+    {
+        candidate =
+            Path.Combine(
+                parentDirectory,
+                $"{baseName}_{index}");
+
+        if (!Directory.Exists(candidate))
+            return candidate;
+
+        index++;
+    }
 }
 
 

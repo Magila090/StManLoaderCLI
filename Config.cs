@@ -7,6 +7,10 @@ public class AppConfig
     public int ParallelDownloads { get; set; } = 20;
 
     public string SelectedOs { get; set; } = "windows";
+
+    public bool DeleteManifestsAfterDownload { get; set; } = true;
+
+    public string? ManifestKeepDirectory { get; set; }
 }
 
 public static class ConfigManager
