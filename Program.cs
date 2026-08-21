@@ -1,6 +1,7 @@
 using SteamKit2;
 using SteamKit2.Authentication;
 using SteamKit2.CDN;
+using System.Text;
 
 var steamClient = new SteamClient();
 var steamUser = steamClient.GetHandler<SteamUser>();
@@ -2106,6 +2107,38 @@ else
     Console.WriteLine();
     Console.WriteLine("Папка игры:");
     Console.WriteLine(gameDirectory);
+
+    // --------------------------------------------------------
+    // Создаём steam_appid.txt после успешного скачивания.
+    // Файл нужен для запуска Unity/Steamworks-игр напрямую:
+    // внутри находится только AppID текущей игры.
+    // --------------------------------------------------------
+
+    if (!downloadFailed)
+    {
+        try
+        {
+            string steamAppIdPath = Path.Combine(gameDirectory, "steam_appid.txt");
+
+            File.WriteAllText(
+                steamAppIdPath,
+                "480".ToString(),
+                new UTF8Encoding(false)
+            );
+
+            Console.WriteLine();
+            Console.WriteLine(
+                "✓ Создан steam_appid.txt:");
+            Console.WriteLine(
+                $"  {steamAppIdPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                $"⚠ Не удалось создать steam_appid.txt: {ex.Message}");
+        }
+    }
 
     // --------------------------------------------------------
     // Обработка временной папки manifest после успешного скачивания.
