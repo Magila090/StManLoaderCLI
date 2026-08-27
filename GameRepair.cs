@@ -124,7 +124,7 @@ public static class GameRepair
 
             Console.WriteLine();
             Console.Write(
-                "Исправить AppId на 480? [Y/N]: ");
+                "Исправить? [Y/N]: ");
 
             string? answer = Console.ReadLine();
 
@@ -177,7 +177,7 @@ public static class GameRepair
 
             Console.WriteLine();
             Console.Write(
-                "Исправить найденные SteamClient.Init? [Y/N]: ");
+                "Исправить? [Y/N]: ");
 
             string? answer = Console.ReadLine();
 
