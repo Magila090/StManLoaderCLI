@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <PackageReference Include="AdysTech.CredentialManager" Version="3.1.0" />
+    <PackageReference Include="dnlib" Version="4.5.0" />
+    <PackageReference Include="QRCoder" Version="1.8.0" />
     <PackageReference Include="SteamKit2" Version="3.4.0" />
   </ItemGroup>
 

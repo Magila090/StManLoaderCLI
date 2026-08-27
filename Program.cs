@@ -2,6 +2,7 @@ using SteamKit2;
 using SteamKit2.Authentication;
 using SteamKit2.CDN;
 using System.Text;
+using QRCoder;
 
 var steamClient = new SteamClient();
 var steamUser = steamClient.GetHandler<SteamUser>();
@@ -78,7 +79,8 @@ async Task MainMenuAsync()
         Console.WriteLine("4. Параллельность");
         Console.WriteLine("5. Операционная система");
         Console.WriteLine("6. Папка манифестов");
-        Console.WriteLine("7. Выход");
+        Console.WriteLine("7. Исправить игру");
+        Console.WriteLine("8. Выход");
         Console.WriteLine();
         Console.WriteLine("────────────────────────────────────────────");
         Console.WriteLine();
@@ -112,8 +114,12 @@ async Task MainMenuAsync()
             case "6":
                 ManifestFolderMenu();
                 break;
-
+            
             case "7":
+                GameRepair.RepairMenu();
+                break;
+
+            case "8":
                 return;
 
             default:
@@ -200,10 +206,31 @@ async Task SteamMenuAsync()
 
                 if (answer?.Equals("y", StringComparison.OrdinalIgnoreCase) == true)
                 {
+                    // Разлогиниваем текущую Steam-сессию
+                    try
+                    {
+                        if (steamLoggedOn)
+                        {
+                            steamUser.LogOff();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine(
+                            $"⚠ Не удалось корректно завершить Steam-сессию: {ex.Message}");
+                    }
+                    finally
+                    {
+                        steamLoggedOn = false;
+                    }
+
+                    // Удаляем сохранённые токены
                     TokenStore.Delete();
 
                     Console.WriteLine();
                     Console.WriteLine("✓ Данные Steam удалены.");
+                    Console.WriteLine("✓ Выход из Steam выполнен.");
                 }
                 else
                 {
@@ -2407,118 +2434,439 @@ async Task<bool> LoginWithSavedTokenAsync(
 // ВХОД В STEAM
 // ============================================================
 
-async Task<bool> LoginToSteamAsync()
+async Task<bool> LoginViaQrAsync()
 {
-    if (steamLoggedOn)
+
+    while (true)
     {
-        Console.WriteLine(
-            "✓ Вы уже авторизованы в Steam.");
-        return true;
-    }
-
-    if (TokenStore.TryLoad(
-        out string? savedUsername,
-        out _,
-        out string? savedRefreshToken))
-    {
-        Console.WriteLine(
-            $"Найдена сохранённая авторизация: {savedUsername}");
-
-        Console.WriteLine(
-            "Пробуем войти без пароля...");
-
-        if (await LoginWithSavedTokenAsync(
-            savedUsername!,
-            savedRefreshToken!))
+        try
         {
+            Console.Clear();
+
+            Console.WriteLine("========================================");
+            Console.WriteLine("          ВХОД В STEAM ПО QR");
+            Console.WriteLine("========================================");
             Console.WriteLine();
-            Console.WriteLine(
-                "✓ Вход по сохранённому токену успешен.");
+            Console.WriteLine("Создаём QR-код...");
+            Console.WriteLine();
+
+            if (!steamClient.IsConnected)
+            {
+                Console.WriteLine("Подключаемся к Steam...");
+
+                steamClient.Connect();
+
+                while (!steamClient.IsConnected)
+                    await Task.Delay(100);
+
+                Console.WriteLine("✓ Подключение к Steam установлено.");
+                Console.WriteLine();
+            }
+
+            var auth = steamClient.Authentication;
+
+            var authSession =
+                await auth.BeginAuthSessionViaQRAsync(
+                    new AuthSessionDetails
+                    {
+                        IsPersistentSession = true
+                    });
+
+            Console.Clear();
+
+            Console.WriteLine("========================================");
+            Console.WriteLine("          ВХОД В STEAM ПО QR");
+            Console.WriteLine("========================================");
+            Console.WriteLine();   
+
+            using (var qrGenerator = new QRCodeGenerator())
+            {
+                QRCodeData qrCodeData =
+                    qrGenerator.CreateQrCode(
+                        authSession.ChallengeURL,
+                        QRCodeGenerator.ECCLevel.Q);
+
+                var matrix = qrCodeData.ModuleMatrix;
+
+                for (int y = 0; y < matrix.Count; y += 2)
+                {
+                    for (int x = 0; x < matrix[y].Count; x++)
+                    {
+                        bool top = matrix[y][x];
+
+                        bool bottom =
+                            y + 1 < matrix.Count &&
+                            matrix[y + 1][x];
+
+                        if (top && bottom)
+                            Console.Write("█");
+                        else if (top)
+                            Console.Write("▀");
+                        else if (bottom)
+                            Console.Write("▄");
+                        else
+                            Console.Write(" ");
+                    }
+
+                    Console.WriteLine();
+                }
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("Отсканируйте QR-код через приложение Steam.");
+            Console.WriteLine();
+            Console.WriteLine("Ожидаем подтверждение...");
+
+            var pollResult =
+                await authSession.PollingWaitForResultAsync();
+
+            if (pollResult == null)
+            {
+                Console.WriteLine();
+                Console.WriteLine("✗ Авторизация не завершилась.");
+                await PauseAsync();
+                return false;
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("✓ QR-код подтверждён!");
+            Console.WriteLine("✓ Авторизация успешна!");
+
+            if (string.IsNullOrEmpty(pollResult.AccessToken) ||
+                string.IsNullOrEmpty(pollResult.RefreshToken))
+            {
+                Console.WriteLine();
+                Console.WriteLine(
+                    "✗ Steam не вернул необходимые токены.");
+
+                await PauseAsync();
+                return false;
+            }
+
+            TokenStore.Save(
+                pollResult.AccountName,
+                pollResult.AccessToken,
+                pollResult.RefreshToken);
+
+            Console.WriteLine("✓ Авторизация сохранена.");
+
+            bool connected =
+                await InitializeSteamAccountAsync(
+                    pollResult.AccountName,
+                    pollResult.RefreshToken);
+
+            if (!connected)
+            {
+                Console.WriteLine();
+                Console.WriteLine(
+                    "⚠ Авторизация успешна, но подключение к аккаунту не установлено.");
+
+                await PauseAsync();
+                return false;
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("✓ Подключение к аккаунту установлено.");
+
+            //await PauseAsync();
+
             return true;
         }
+        catch (SteamKit2.AsyncJobFailedException)
+        {
+            Console.WriteLine();
+            Console.WriteLine("⚠ QR-код истёк или авторизация была прервана.");
+            Console.WriteLine();
+            Console.WriteLine("Создаём новый QR-код...");
 
-        Console.WriteLine();
-        Console.WriteLine(
-            "Сохранённый токен не подошёл.");
+            await Task.Delay(1500);
+
+            // Здесь ничего не возвращаем.
+            // while (true) автоматически начнёт новый цикл.
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine();
+            Console.WriteLine("✗ Произошла ошибка при авторизации:");
+            Console.WriteLine();
+            Console.WriteLine(ex.Message);
+
+            await PauseAsync();
+
+            return false;
+        }
     }
+}
 
-    Console.WriteLine();
-    Console.WriteLine("=== Первичная авторизация ===");
+async Task<bool> LoginWithCredentialsAsync()
+{
+    Console.WriteLine("========================================");
+    Console.WriteLine("         ВХОД В STEAM ПО ЛОГИНУ");
+    Console.WriteLine("========================================");
     Console.WriteLine();
 
     Console.Write("Steam login: ");
 
-    string? username =
-        Console.ReadLine();
+    string? username = Console.ReadLine();
 
     if (string.IsNullOrWhiteSpace(username))
     {
-        Console.WriteLine(
-            "Логин не указан.");
-
+        Console.WriteLine();
+        Console.WriteLine("✗ Логин не указан.");
+        await PauseAsync();
         return false;
     }
 
     Console.Write("Steam password: ");
 
-    string password =
-        ReadPassword();
+    string password = ReadPassword();
 
     Console.WriteLine();
-    Console.WriteLine(
-        "Начинаем авторизацию...");
+    Console.WriteLine("Начинаем авторизацию...");
+    Console.WriteLine();
 
-    var auth =
-        steamClient.Authentication;
-
-    var authSession =
-        await auth.BeginAuthSessionViaCredentialsAsync(
-            new AuthSessionDetails
-            {
-                Username = username,
-                Password = password,
-                IsPersistentSession = true
-            });
-
-    Console.WriteLine(
-        "✓ Сессия авторизации создана.");
-
-    Console.WriteLine(
-        "Ожидаем подтверждение Steam Guard...");
-
-    var pollResult =
-        await authSession.PollingWaitForResultAsync();
-
-    if (pollResult == null)
+    if (!steamClient.IsConnected)
     {
-        Console.WriteLine(
-            "✗ Авторизация не завершилась.");
+        Console.WriteLine("Подключаемся к Steam...");
+
+        steamClient.Connect();
+
+        while (!steamClient.IsConnected)
+            await Task.Delay(100);
+
+        Console.WriteLine("✓ Подключение к Steam установлено.");
+        Console.WriteLine();
+    }
+
+    var auth = steamClient.Authentication;
+
+    try
+    {
+        var authSession =
+            await auth.BeginAuthSessionViaCredentialsAsync(
+                new AuthSessionDetails
+                {
+                    Username = username,
+                    Password = password,
+                    IsPersistentSession = true
+                });
+
+        Console.WriteLine("✓ Сессия авторизации создана.");
+        Console.WriteLine();
+        Console.WriteLine("Ожидаем подтверждение Steam Guard...");
+
+        var pollResult =
+            await authSession.PollingWaitForResultAsync();
+
+        if (pollResult == null)
+        {
+            Console.WriteLine();
+            Console.WriteLine("✗ Авторизация не завершилась.");
+            await PauseAsync();
+            return false;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("✓ Авторизация успешна!");
+
+        if (!string.IsNullOrEmpty(pollResult.AccessToken) &&
+            !string.IsNullOrEmpty(pollResult.RefreshToken))
+        {
+            TokenStore.Save(
+                pollResult.AccountName,
+                pollResult.AccessToken,
+                pollResult.RefreshToken);
+
+            Console.WriteLine("✓ Авторизация сохранена.");
+        }
+
+        // Сразу после авторизации устанавливаем
+        // полноценную Steam-сессию.
+        bool connected =
+            await InitializeSteamAccountAsync(
+                pollResult.AccountName,
+                pollResult.RefreshToken);
+
+        if (!connected)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "⚠ Авторизация прошла, но подключение к аккаунту не удалось.");
+
+            await PauseAsync();
+            return false;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("✓ Подключение к Steam-аккаунту установлено.");
+
+        //await PauseAsync();
+
+        return true;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine();
+        Console.WriteLine("✗ Ошибка авторизации:");
+        Console.WriteLine();
+        Console.WriteLine(ex.Message);
+
+        await PauseAsync();
 
         return false;
     }
+}
 
-    Console.WriteLine();
-    Console.WriteLine(
-        "✓ Авторизация успешна!");
-
-    steamLoggedOn = true;
-
-    if (!string.IsNullOrEmpty(
-            pollResult.AccessToken) &&
-        !string.IsNullOrEmpty(
-            pollResult.RefreshToken))
+async Task<bool> LoginToSteamAsync()
+{
+    if (steamLoggedOn)
     {
-        TokenStore.Save(
-            username,
-            pollResult.AccessToken,
-            pollResult.RefreshToken);
-
-        Console.WriteLine(
-            "✓ Авторизация сохранена.");
+        Console.WriteLine();
+        Console.WriteLine("✓ Вы уже авторизованы в Steam.");
+        return true;
     }
 
-    return true;
+    while (true)
+    {
+        Console.Clear();
+
+        Console.WriteLine("========================================");
+        Console.WriteLine("              ВХОД В STEAM");
+        Console.WriteLine("========================================");
+        Console.WriteLine();
+
+        Console.WriteLine("1. Войти по QR-коду");
+        Console.WriteLine("2. Войти по логину и паролю");
+        Console.WriteLine("3. Назад");
+        Console.WriteLine();
+
+        Console.Write("Выберите способ входа: ");
+
+        string? choice = Console.ReadLine();
+
+        switch (choice)
+        {
+            case "1":
+                Console.Clear();
+
+                if (await LoginViaQrAsync())
+                    return true;
+
+                // Если QR не удался — возвращаемся
+                // к выбору способа входа.
+                break;
+
+            case "2":
+                Console.Clear();
+
+                if (await LoginWithCredentialsAsync())
+                    return true;
+
+                break;
+
+            case "3":
+                return false;
+
+            default:
+                Console.WriteLine();
+                Console.WriteLine("✗ Неправильный выбор.");
+                await PauseAsync();
+                break;
+        }
+    }
 }
+
+async Task<bool> InitializeSteamAccountAsync(
+    string username,
+    string refreshToken)
+{
+    try
+    {
+        steamLoggedOn = false;
+
+        Console.WriteLine();
+        Console.WriteLine("Подключаем аккаунт к Steam...");
+
+        if (!steamClient.IsConnected)
+        {
+            Console.WriteLine("Подключаемся к Steam...");
+
+            steamClient.Connect();
+
+            while (!steamClient.IsConnected)
+                await Task.Delay(100);
+        }
+
+        steamUser.LogOn(
+            new SteamUser.LogOnDetails
+            {
+                Username = username,
+                AccessToken = refreshToken,
+                ShouldRememberPassword = true
+            });
+
+        using var timeout =
+            new CancellationTokenSource(
+                TimeSpan.FromSeconds(20));
+
+        while (!timeout.IsCancellationRequested)
+        {
+            var callbackTask =
+                steamClient.WaitForCallbackAsync();
+
+            var completed =
+                await Task.WhenAny(
+                    callbackTask,
+                    Task.Delay(
+                        Timeout.Infinite,
+                        timeout.Token));
+
+            if (completed != callbackTask)
+                break;
+
+            var callback =
+                await callbackTask;
+
+            if (callback is SteamUser.LoggedOnCallback logOn)
+            {
+                if (logOn.Result == EResult.OK)
+                {
+                    steamLoggedOn = true;
+
+                    Console.WriteLine();
+                    Console.WriteLine(
+                        "✓ Steam сообщил об успешном подключении.");
+
+                    return true;
+                }
+
+                Console.WriteLine();
+                Console.WriteLine(
+                    $"✗ Steam отклонил подключение: {logOn.Result}");
+
+                return false;
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "✗ Steam не подтвердил подключение за 20 секунд.");
+
+        return false;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            $"✗ Ошибка подключения аккаунта: {ex.Message}");
+
+        steamLoggedOn = false;
+
+        return false;
+    }
+}
+
+
 
 
 // ============================================================
