@@ -10,6 +10,8 @@ var steamUser = steamClient.GetHandler<SteamUser>();
 // Фактическое состояние авторизации Steam в текущем запуске.
 bool steamLoggedOn = false;
 
+string? currentSteamUsername = null;
+
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 AppConfig config = ConfigManager.Load();
@@ -18,6 +20,9 @@ const string ryuuAuthKey = "???"; // Вставьте свой ключ
 
 string? downloadDirectory =
     config.DownloadDirectory;
+
+string? ownManifestDirectory =
+    config.OwnManifestDirectory;
 
 int parallelDownloads =
     config.ParallelDownloads;
@@ -51,15 +56,10 @@ async Task MainMenuAsync()
         Console.WriteLine("╚════════════════════════════════════════════╝");
         Console.WriteLine();
 
-        TokenStore.TryLoad(
-            out string? storedUsername,
-            out _,
-            out _);
-
         Console.WriteLine(
-            $"Steam:          {(steamLoggedOn
-                ? $"✓ Авторизован ({storedUsername ?? "аккаунт"})"
-                : "✗ Не авторизован")}");
+        $"Steam:          {(steamLoggedOn
+            ? $"✓ Авторизован ({currentSteamUsername ?? "аккаунт"})"
+            : "✗ Не авторизован")}");
 
         Console.WriteLine(
             $"Каталог:        {(string.IsNullOrEmpty(downloadDirectory) ? "не задан" : downloadDirectory)}");
@@ -80,7 +80,8 @@ async Task MainMenuAsync()
         Console.WriteLine("5. Операционная система");
         Console.WriteLine("6. Папка манифестов");
         Console.WriteLine("7. Исправить игру");
-        Console.WriteLine("8. Выход");
+        Console.WriteLine("8. Собственные манифесты");
+        Console.WriteLine("0. Выход");
         Console.WriteLine();
         Console.WriteLine("────────────────────────────────────────────");
         Console.WriteLine();
@@ -120,6 +121,10 @@ async Task MainMenuAsync()
                 break;
 
             case "8":
+                await OwnManifestMenuAsync();
+                break;
+
+            case "0":
                 return;
 
             default:
@@ -136,123 +141,386 @@ async Task MainMenuAsync()
 // STEAM
 // ============================================================
 
+async Task ResetSteamSessionAsync()
+{
+    try
+    {
+        if (steamLoggedOn)
+        {
+            steamUser.LogOff();
+        }
+    }
+    catch
+    {
+    }
+
+    steamLoggedOn = false;
+    currentSteamUsername = null;
+
+    if (steamClient.IsConnected)
+    {
+        steamClient.Disconnect();
+
+        while (steamClient.IsConnected)
+            await Task.Delay(100);
+    }
+
+    steamClient.Connect();
+
+    while (!steamClient.IsConnected)
+        await Task.Delay(100);
+}
+
+
+string? SelectSteamAccount(
+    string title)
+{
+    var accounts =
+        TokenStore.GetAccounts();
+
+    if (accounts.Count == 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            "✗ Сохранённых аккаунтов нет.");
+
+        return null;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine(title);
+    Console.WriteLine();
+
+    for (int i = 0; i < accounts.Count; i++)
+    {
+        var account = accounts[i];
+
+        string marker =
+            account.IsActive
+                ? " ← выбран"
+                : "";
+
+        Console.WriteLine(
+            $"{i + 1}. {account.Username}{marker}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("0. Назад");
+    Console.WriteLine();
+
+    while (true)
+    {
+        Console.Write("Выберите аккаунт: ");
+
+        string? input =
+            Console.ReadLine();
+
+        if (input == "0")
+            return null;
+
+        if (int.TryParse(
+                input,
+                out int number) &&
+            number >= 1 &&
+            number <= accounts.Count)
+        {
+            return accounts[number - 1].Username;
+        }
+
+        Console.WriteLine(
+            "✗ Неправильный выбор.");
+    }
+}
+
+async Task SwitchSteamAccountAsync()
+{
+    Console.Clear();
+
+    string? username =
+        SelectSteamAccount(
+            "=== Переключение аккаунта ===");
+
+    if (username == null)
+        return;
+
+    if (steamLoggedOn &&
+        username.Equals(
+            currentSteamUsername,
+            StringComparison.OrdinalIgnoreCase))
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            "✓ Этот аккаунт уже используется.");
+
+        await PauseAsync();
+        return;
+    }
+
+    if (!TokenStore.TryLoad(
+            username,
+            out string? storedUsername,
+            out _,
+            out string? refreshToken))
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            "✗ Не удалось прочитать данные аккаунта.");
+
+        await PauseAsync();
+        return;
+    }
+
+    string? oldAccount =
+        currentSteamUsername;
+
+    await ResetSteamSessionAsync();
+
+    TokenStore.SetActive(username);
+
+    Console.WriteLine();
+    Console.WriteLine(
+        $"Входим как {storedUsername}...");
+
+    bool success =
+        await LoginWithSavedTokenAsync(
+            storedUsername!,
+            refreshToken!);
+
+    if (success)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            $"✓ Активный аккаунт: {storedUsername}");
+
+        await PauseAsync();
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine(
+        "✗ Переключиться не удалось.");
+
+    // Если возможно — возвращаем предыдущий аккаунт.
+    if (!string.IsNullOrWhiteSpace(oldAccount) &&
+        TokenStore.TryLoad(
+            oldAccount,
+            out string? oldUsername,
+            out _,
+            out string? oldRefreshToken))
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            $"Возвращаем аккаунт {oldUsername}...");
+
+        await ResetSteamSessionAsync();
+
+        TokenStore.SetActive(oldUsername!);
+
+        await LoginWithSavedTokenAsync(
+            oldUsername!,
+            oldRefreshToken!);
+    }
+
+    await PauseAsync();
+}
+
+
+async Task AddSteamAccountAsync()
+{
+    string? previousAccount =
+        currentSteamUsername;
+
+    await ResetSteamSessionAsync();
+
+    bool success =
+        await LoginToSteamAsync();
+
+    if (success)
+        return;
+
+    // Пользователь отменил или произошла ошибка.
+    // Возвращаем прежний аккаунт.
+    if (!string.IsNullOrWhiteSpace(previousAccount) &&
+        TokenStore.TryLoad(
+            previousAccount,
+            out string? username,
+            out _,
+            out string? refreshToken))
+    {
+        await ResetSteamSessionAsync();
+
+        TokenStore.SetActive(username!);
+
+        await LoginWithSavedTokenAsync(
+            username!,
+            refreshToken!);
+    }
+}
+
+async Task DeleteSteamAccountAsync()
+{
+    Console.Clear();
+
+    string? username =
+        SelectSteamAccount(
+            "=== Удаление аккаунта ===");
+
+    if (username == null)
+        return;
+
+    Console.WriteLine();
+    Console.WriteLine(
+        $"Будут удалены данные аккаунта: {username}");
+
+    Console.WriteLine();
+    Console.Write(
+        "Удалить? (y/n): ");
+
+    string? answer =
+        Console.ReadLine();
+
+    if (!answer?.Equals(
+            "y",
+            StringComparison.OrdinalIgnoreCase) == true)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Отмена.");
+        await PauseAsync();
+        return;
+    }
+
+    bool deletingCurrent =
+        steamLoggedOn &&
+        username.Equals(
+            currentSteamUsername,
+            StringComparison.OrdinalIgnoreCase);
+
+    if (deletingCurrent)
+    {
+        try
+        {
+            steamUser.LogOff();
+        }
+        catch
+        {
+        }
+
+        steamLoggedOn = false;
+        currentSteamUsername = null;
+    }
+
+    TokenStore.Delete(username);
+
+    Console.WriteLine();
+    Console.WriteLine(
+        $"✓ Данные аккаунта {username} удалены.");
+
+    // Если удалили текущий аккаунт —
+    // автоматически подключаем новый выбранный,
+    // если он остался.
+    if (deletingCurrent &&
+        TokenStore.TryLoad(
+            out string? nextUsername,
+            out _,
+            out string? nextRefreshToken))
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            $"Подключаем следующий аккаунт: {nextUsername}");
+
+        await ResetSteamSessionAsync();
+
+        await LoginWithSavedTokenAsync(
+            nextUsername!,
+            nextRefreshToken!);
+    }
+
+    await PauseAsync();
+}
+
 async Task SteamMenuAsync()
 {
     while (true)
     {
         Console.Clear();
 
-        Console.WriteLine("╔════════════════════════════════════════════╗");
-        Console.WriteLine("║                  Steam                     ║");
-        Console.WriteLine("╚════════════════════════════════════════════╝");
+        Console.WriteLine(
+            "╔════════════════════════════════════════════╗");
+        Console.WriteLine(
+            "║                   Steam                    ║");
+        Console.WriteLine(
+            "╚════════════════════════════════════════════╝");
         Console.WriteLine();
 
-        TokenStore.TryLoad(
-            out string? storedUsername,
-            out _,
-            out _);
+        var accounts =
+            TokenStore.GetAccounts();
 
         if (steamLoggedOn)
         {
-            Console.WriteLine($"Статус: ✓ Авторизован");
-            Console.WriteLine($"Аккаунт: {storedUsername ?? "аккаунт"}");
+            Console.WriteLine(
+                "Статус: ✓ Авторизован");
+
+            Console.WriteLine(
+                $"Аккаунт: {currentSteamUsername ?? "аккаунт"}");
         }
         else
         {
-            Console.WriteLine("Статус: ✗ Не авторизован");
+            Console.WriteLine(
+                "Статус: ✗ Не авторизован");
         }
 
-        Console.WriteLine();
-        Console.WriteLine("1. Войти в Steam");
-        Console.WriteLine("2. Удалить данные Steam");
-        Console.WriteLine("3. Назад");
+        Console.WriteLine(
+            $"Сохранённых аккаунтов: {accounts.Count}");
+
         Console.WriteLine();
 
-        Console.Write("Выберите действие: ");
+        Console.WriteLine(
+            "1. Добавить аккаунт");
 
-        string? choice = Console.ReadLine();
+        Console.WriteLine(
+            "2. Переключить аккаунт");
+
+        Console.WriteLine(
+            "3. Удалить аккаунт");
+
+        Console.WriteLine(
+            "0. Назад");
+
+        Console.WriteLine();
+
+        Console.Write(
+            "Выберите действие: ");
+
+        string? choice =
+            Console.ReadLine();
 
         switch (choice)
         {
             case "1":
-                Console.Clear();
-                await LoginToSteamAsync();
-                await PauseAsync();
+                await AddSteamAccountAsync();
                 break;
 
             case "2":
-                Console.Clear();
-
-                Console.WriteLine("=== Удаление данных Steam ===");
-                Console.WriteLine();
-
-                if (!TokenStore.TryLoad(
-                    out string? steamUsername,
-                    out _,
-                    out _))
-                {
-                    Console.WriteLine("Сохранённых данных Steam нет.");
-                    await PauseAsync();
-                    break;
-                }
-
-                Console.WriteLine(
-                    $"Будут удалены сохранённые данные аккаунта: {storedUsername}");
-
-                Console.WriteLine();
-                Console.Write("Удалить? (y/n): ");
-
-                string? answer = Console.ReadLine();
-
-                if (answer?.Equals("y", StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    // Разлогиниваем текущую Steam-сессию
-                    try
-                    {
-                        if (steamLoggedOn)
-                        {
-                            steamUser.LogOff();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine();
-                        Console.WriteLine(
-                            $"⚠ Не удалось корректно завершить Steam-сессию: {ex.Message}");
-                    }
-                    finally
-                    {
-                        steamLoggedOn = false;
-                    }
-
-                    // Удаляем сохранённые токены
-                    TokenStore.Delete();
-
-                    Console.WriteLine();
-                    Console.WriteLine("✓ Данные Steam удалены.");
-                    Console.WriteLine("✓ Выход из Steam выполнен.");
-                }
-                else
-                {
-                    Console.WriteLine();
-                    Console.WriteLine("Отмена.");
-                }
-
-                await PauseAsync();
+                await SwitchSteamAccountAsync();
                 break;
 
             case "3":
+                await DeleteSteamAccountAsync();
+                break;
+
+            case "0":
                 return;
 
             default:
                 Console.WriteLine();
-                Console.WriteLine("✗ Неизвестный пункт.");
+                Console.WriteLine(
+                    "✗ Неизвестный пункт.");
+
                 await PauseAsync();
                 break;
         }
     }
 }
-
 
 // ============================================================
 // КАТАЛОГ
@@ -279,7 +547,7 @@ void CatalogMenu()
 
         Console.WriteLine();
         Console.WriteLine("1. Изменить каталог");
-        Console.WriteLine("2. Назад");
+        Console.WriteLine("0. Назад");
         Console.WriteLine();
 
         Console.Write("Выберите действие: ");
@@ -332,7 +600,7 @@ void CatalogMenu()
                 Pause();
                 break;
 
-            case "2":
+            case "0":
                 return;
 
             default:
@@ -430,7 +698,7 @@ void OsMenu()
         Console.WriteLine("2. macOS");
         Console.WriteLine("3. Linux");
         Console.WriteLine("4. Все ОС");
-        Console.WriteLine("5. Назад");
+        Console.WriteLine("0. Назад");
         Console.WriteLine();
 
         Console.Write("Выберите ОС: ");
@@ -443,11 +711,11 @@ void OsMenu()
             "2" => "macos",
             "3" => "linux",
             "4" => "all",
-            "5" => null,
+            "0" => null,
             _ => ""
         };
 
-        if (choice == "5")
+        if (choice == "0")
             return;
 
         if (string.IsNullOrEmpty(newOs))
@@ -498,7 +766,7 @@ void ManifestFolderMenu()
         Console.WriteLine("1. Удалять папку после скачивания");
         Console.WriteLine("2. Оставлять папку после скачивания");
         Console.WriteLine("3. Изменить папку хранения");
-        Console.WriteLine("4. Назад");
+        Console.WriteLine("0. Назад");
         Console.WriteLine();
         Console.Write("Выберите действие: ");
 
@@ -585,7 +853,7 @@ void ManifestFolderMenu()
                 Pause();
                 break;
 
-            case "4":
+            case "0":
                 return;
 
             default:
@@ -595,6 +863,265 @@ void ManifestFolderMenu()
                 break;
         }
     }
+}
+
+
+// ============================================================
+// СОБСТВЕННЫЕ MANIFEST
+// ============================================================
+
+async Task OwnManifestMenuAsync()
+{
+    while (true)
+    {
+        Console.Clear();
+
+        Console.WriteLine(
+            "╔════════════════════════════════════════════╗");
+        Console.WriteLine(
+            "║           Собственные манифесты            ║");
+        Console.WriteLine(
+            "╚════════════════════════════════════════════╝");
+        Console.WriteLine();
+
+        Console.WriteLine(
+            "Папка сохранения:");
+
+        Console.WriteLine(
+            $"  {(string.IsNullOrWhiteSpace(ownManifestDirectory)
+                ? "не задана"
+                : ownManifestDirectory)}");
+
+        Console.WriteLine();
+
+        Console.WriteLine(
+            $"Аккаунт: {(steamLoggedOn
+                ? currentSteamUsername ?? "аккаунт"
+                : "не авторизован")}");
+
+        Console.WriteLine();
+        Console.WriteLine("1. Изменить папку сохранения");
+
+        if (string.IsNullOrWhiteSpace(
+                ownManifestDirectory))
+        {
+            Console.WriteLine(
+                "2. Скачать манифесты [недоступно — укажите папку]");
+        }
+        else
+        {
+            Console.WriteLine(
+                "2. Скачать манифесты");
+        }
+
+        Console.WriteLine("0. Назад");
+        Console.WriteLine();
+
+        Console.Write(
+            "Выберите действие: ");
+
+        string? choice =
+            Console.ReadLine();
+
+        switch (choice)
+        {
+            case "1":
+                OwnManifestDirectoryMenu();
+                break;
+
+            case "2":
+                await DownloadOwnManifestsAsync();
+                break;
+
+            case "0":
+                return;
+
+            default:
+                Console.WriteLine();
+                Console.WriteLine(
+                    "✗ Неизвестный пункт.");
+
+                await PauseAsync();
+                break;
+        }
+    }
+}
+
+void OwnManifestDirectoryMenu()
+{
+    Console.Clear();
+
+    Console.WriteLine(
+        "=== Папка собственных манифестов ===");
+    Console.WriteLine();
+
+    Console.WriteLine(
+        $"Текущая папка: {ownManifestDirectory ?? "не задана"}");
+
+    Console.WriteLine();
+    Console.Write(
+        "Введите новую папку или Enter для отмены: ");
+
+    string? input =
+        Console.ReadLine();
+
+    if (string.IsNullOrWhiteSpace(input))
+        return;
+
+    try
+    {
+        string path =
+            Path.GetFullPath(
+                input.Trim().Trim('"'));
+
+        Directory.CreateDirectory(path);
+
+        ownManifestDirectory =
+            path;
+
+        config.OwnManifestDirectory =
+            path;
+
+        ConfigManager.Save(config);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "✓ Папка сохранена:");
+
+        Console.WriteLine(
+            path);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            $"✗ Не удалось использовать папку: {ex.Message}");
+    }
+
+    Pause();
+}
+
+async Task DownloadOwnManifestsAsync()
+{
+    Console.Clear();
+
+    Console.WriteLine(
+        "╔════════════════════════════════════════════╗");
+    Console.WriteLine(
+        "║        Скачать собственные manifest       ║");
+    Console.WriteLine(
+        "╚════════════════════════════════════════════╝");
+    Console.WriteLine();
+
+    // --------------------------------------------------------
+    // Папка
+    // --------------------------------------------------------
+
+    if (string.IsNullOrWhiteSpace(
+            ownManifestDirectory))
+    {
+        Console.WriteLine(
+            "✗ Сначала укажите папку сохранения.");
+
+        await PauseAsync();
+        return;
+    }
+
+    // --------------------------------------------------------
+    // Steam
+    // --------------------------------------------------------
+
+    if (!steamLoggedOn ||
+        string.IsNullOrWhiteSpace(
+            currentSteamUsername))
+    {
+        Console.WriteLine(
+            "✗ Steam-аккаунт не авторизован.");
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "Сначала войдите в Steam или выберите сохранённый аккаунт.");
+
+        await PauseAsync();
+        return;
+    }
+
+    Console.WriteLine(
+        $"Аккаунт: {currentSteamUsername}");
+
+    Console.WriteLine(
+        $"Папка:   {ownManifestDirectory}");
+
+    Console.WriteLine();
+
+    // --------------------------------------------------------
+    // AppID
+    // --------------------------------------------------------
+
+    Console.Write(
+        "Введите AppID игры: ");
+
+    string? input =
+        Console.ReadLine();
+
+    if (!uint.TryParse(
+            input,
+            out uint appId) ||
+        appId == 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            "✗ Неверный AppID.");
+
+        await PauseAsync();
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine(
+        $"Получаем manifest для AppID {appId}...");
+
+    Console.WriteLine(
+        $"От имени аккаунта: {currentSteamUsername}");
+
+    try
+    {
+        string resultDirectory =
+            await OwnManifestDownloader.DownloadAsync(
+                steamClient,
+                appId,
+                ownManifestDirectory,
+                currentSteamUsername);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "========================================");
+
+        Console.WriteLine(
+            "✓ СКАЧИВАНИЕ ЗАВЕРШЕНО");
+
+        Console.WriteLine(
+            "========================================");
+
+        Console.WriteLine();
+
+        Console.WriteLine(
+            "Manifest сохранены:");
+
+        Console.WriteLine(
+            resultDirectory);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine();
+        Console.WriteLine(
+            "✗ Не удалось скачать manifest:");
+
+        Console.WriteLine(
+            $"{ex.GetType().Name}: {ex.Message}");
+    }
+
+    await PauseAsync();
 }
 
 
@@ -2135,37 +2662,6 @@ else
     Console.WriteLine("Папка игры:");
     Console.WriteLine(gameDirectory);
 
-    // --------------------------------------------------------
-    // Создаём steam_appid.txt после успешного скачивания.
-    // Файл нужен для запуска Unity/Steamworks-игр напрямую:
-    // внутри находится только AppID текущей игры.
-    // --------------------------------------------------------
-
-    if (!downloadFailed)
-    {
-        try
-        {
-            string steamAppIdPath = Path.Combine(gameDirectory, "steam_appid.txt");
-
-            File.WriteAllText(
-                steamAppIdPath,
-                "480".ToString(),
-                new UTF8Encoding(false)
-            );
-
-            Console.WriteLine();
-            Console.WriteLine(
-                "✓ Создан steam_appid.txt:");
-            Console.WriteLine(
-                $"  {steamAppIdPath}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine();
-            Console.WriteLine(
-                $"⚠ Не удалось создать steam_appid.txt: {ex.Message}");
-        }
-    }
 
     // --------------------------------------------------------
     // Обработка временной папки manifest после успешного скачивания.
@@ -2388,6 +2884,7 @@ async Task<bool> LoginWithSavedTokenAsync(
                 if (logOn.Result == EResult.OK)
                 {
                     steamLoggedOn = true;
+                    currentSteamUsername = username;
 
                     Console.WriteLine(
                         "✓ Steam сообщил об успешной авторизации.");
@@ -2737,7 +3234,7 @@ async Task<bool> LoginToSteamAsync()
 
         Console.WriteLine("1. Войти по QR-коду");
         Console.WriteLine("2. Войти по логину и паролю");
-        Console.WriteLine("3. Назад");
+        Console.WriteLine("0. Назад");
         Console.WriteLine();
 
         Console.Write("Выберите способ входа: ");
@@ -2764,7 +3261,7 @@ async Task<bool> LoginToSteamAsync()
 
                 break;
 
-            case "3":
+            case "0":
                 return false;
 
             default:
@@ -2832,6 +3329,7 @@ async Task<bool> InitializeSteamAccountAsync(
                 if (logOn.Result == EResult.OK)
                 {
                     steamLoggedOn = true;
+                    currentSteamUsername = username;
 
                     Console.WriteLine();
                     Console.WriteLine(

@@ -11,6 +11,8 @@ public class AppConfig
     public bool DeleteManifestsAfterDownload { get; set; } = true;
 
     public string? ManifestKeepDirectory { get; set; }
+
+    public string? OwnManifestDirectory { get; set; }
 }
 
 public static class ConfigManager
