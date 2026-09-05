@@ -30,4 +30,9 @@
       <Filter>Исходные файлы</Filter>
     </ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <MASM Include="SteamCompatAsm.asm">
+      <Filter>Исходные файлы</Filter>
+    </MASM>
+  </ItemGroup>
 </Project>
