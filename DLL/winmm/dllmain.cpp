@@ -1,216 +1,630 @@
 ﻿#include "pch.h"
 
 #include <windows.h>
-#include <fstream>
-#include <string>
-#include <set>
-#include <mutex>
+#include <cstring>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
-static std::set<std::string> g_loadedModules;
-
 using ProxyModuleInitializeFunc = void(*)();
 
-
-// ============================================================
-// Очень ранняя подготовка Steam Overlay
-// ============================================================
-
-static HMODULE g_earlySteamOverlay = nullptr;
-
-static void PrepareSteamOverlayVeryEarly()
+namespace
 {
-    // Steam-контекст, который раньше задавал Python до запуска игры.
-    SetEnvironmentVariableW(L"SteamClientLaunch", L"1");
-    SetEnvironmentVariableW(L"SteamGameId", L"480");
-    SetEnvironmentVariableW(L"SteamAppId", L"480");
-    SetEnvironmentVariableW(L"SteamOverlayGameId", L"480");
-    SetEnvironmentVariableW(L"SteamEnv", L"1");
+    INIT_ONCE g_modulesInitOnce = INIT_ONCE_STATIC_INIT;
 
-    g_earlySteamOverlay =
-        GetModuleHandleW(L"gameoverlayrenderer64.dll");
+    HMODULE g_earlySteamOverlay = nullptr;
+    HMODULE g_earlySteamCompat = nullptr;
 
-    if (g_earlySteamOverlay == nullptr)
+    constexpr DWORD kMaxModulesFileBytes = 64 * 1024;
+    constexpr size_t kMaxInitializedModules = 64;
+
+    // ------------------------------------------------------------
+    // Basic path helpers. No STL / iostream / heap allocations here.
+    // ------------------------------------------------------------
+
+    bool GetProxyDirectoryW(
+        wchar_t* output,
+        size_t capacity)
     {
-        g_earlySteamOverlay = LoadLibraryW(
-            L"C:\\Program Files (x86)\\Steam\\gameoverlayrenderer64.dll"
-        );
-    }
-
-    if (g_earlySteamOverlay != nullptr)
-    {
-        HMODULE pinned = nullptr;
-
-        GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_PIN,
-            L"gameoverlayrenderer64.dll",
-            &pinned
-        );
-    }
-}
-
-
-// ============================================================
-// Инициализация модулей выполняется ровно один раз
-// ============================================================
-
-static INIT_ONCE g_modulesInitOnce = INIT_ONCE_STATIC_INIT;
-
-
-// ============================================================
-// Убираем пробелы
-// ============================================================
-
-std::string Trim(const std::string& str)
-{
-    size_t start = str.find_first_not_of(" \t\r\n");
-
-    if (start == std::string::npos)
-        return "";
-
-    size_t end = str.find_last_not_of(" \t\r\n");
-
-    return str.substr(start, end - start + 1);
-}
-
-
-// ============================================================
-// Получаем папку Proxy.dll
-// ============================================================
-
-std::string GetProxyDirectory()
-{
-    char path[MAX_PATH]{};
-
-    DWORD length = GetModuleFileNameA(
-        reinterpret_cast<HMODULE>(&__ImageBase),
-        path,
-        MAX_PATH
-    );
-
-    if (length == 0 || length >= MAX_PATH)
-        return "";
-
-    std::string fullPath(path);
-
-    size_t lastSlash = fullPath.find_last_of("\\/");
-
-    if (lastSlash == std::string::npos)
-        return "";
-
-    return fullPath.substr(0, lastSlash + 1);
-}
-
-
-// ============================================================
-// Проверяем имя DLL
-// ============================================================
-
-bool IsValidModuleName(const std::string& name)
-{
-    if (name.empty())
-        return false;
-
-    // modules.txt должен содержать только имя DLL,
-    // а не произвольный путь.
-    if (name.find('\\') != std::string::npos ||
-        name.find('/') != std::string::npos ||
-        name.find(':') != std::string::npos)
-    {
-        return false;
-    }
-
-    return true;
-}
-
-
-// ============================================================
-// Загружаем DLL из modules.txt
-// ============================================================
-
-void LoadModules()
-{
-    const std::string directory = GetProxyDirectory();
-
-    if (directory.empty())
-        return;
-
-    const std::string txtPath =
-        directory + "modules.txt";
-
-    std::ifstream file(txtPath);
-
-    if (!file.is_open())
-        return;
-
-    std::string line;
-
-    while (std::getline(file, line))
-    {
-        line = Trim(line);
-
-        if (line.empty())
-            continue;
-
-        if (!IsValidModuleName(line))
-            continue;
-
-        if (g_loadedModules.find(line) !=
-            g_loadedModules.end())
-        {
-            continue;
+        if (
+            output == nullptr ||
+            capacity < 2
+            ) {
+            return false;
         }
 
-        const std::string dllPath =
-            directory + line;
+        const DWORD length =
+            GetModuleFileNameW(
+                reinterpret_cast<HMODULE>(
+                    &__ImageBase
+                    ),
+                output,
+                static_cast<DWORD>(capacity)
+            );
 
-        HMODULE module =
-            LoadLibraryA(dllPath.c_str());
+        if (
+            length == 0 ||
+            length >= capacity
+            ) {
+            output[0] = L'\0';
+            return false;
+        }
 
-        if (!module)
-            continue;
+        for (DWORD i = length; i > 0; --i)
+        {
+            const DWORD pos = i - 1;
 
-        g_loadedModules.insert(line);
+            if (
+                output[pos] == L'\\' ||
+                output[pos] == L'/'
+                ) {
+                output[pos + 1] = L'\0';
+                return true;
+            }
+        }
 
-        auto initialize =
-            reinterpret_cast<ProxyModuleInitializeFunc>(
+        output[0] = L'\0';
+        return false;
+    }
+
+    bool GetProxyDirectoryA(
+        char* output,
+        size_t capacity)
+    {
+        if (
+            output == nullptr ||
+            capacity < 2
+            ) {
+            return false;
+        }
+
+        const DWORD length =
+            GetModuleFileNameA(
+                reinterpret_cast<HMODULE>(
+                    &__ImageBase
+                    ),
+                output,
+                static_cast<DWORD>(capacity)
+            );
+
+        if (
+            length == 0 ||
+            length >= capacity
+            ) {
+            output[0] = '\0';
+            return false;
+        }
+
+        for (DWORD i = length; i > 0; --i)
+        {
+            const DWORD pos = i - 1;
+
+            if (
+                output[pos] == '\\' ||
+                output[pos] == '/'
+                ) {
+                output[pos + 1] = '\0';
+                return true;
+            }
+        }
+
+        output[0] = '\0';
+        return false;
+    }
+
+    bool AppendW(
+        wchar_t* buffer,
+        size_t capacity,
+        const wchar_t* suffix)
+    {
+        if (
+            buffer == nullptr ||
+            suffix == nullptr
+            ) {
+            return false;
+        }
+
+        const size_t current =
+            static_cast<size_t>(
+                lstrlenW(buffer)
+                );
+
+        const size_t extra =
+            static_cast<size_t>(
+                lstrlenW(suffix)
+                );
+
+        if (
+            current + extra + 1 >
+            capacity
+            ) {
+            return false;
+        }
+
+        memcpy(
+            buffer + current,
+            suffix,
+            (extra + 1) *
+            sizeof(wchar_t)
+        );
+
+        return true;
+    }
+
+    bool AppendA(
+        char* buffer,
+        size_t capacity,
+        const char* suffix)
+    {
+        if (
+            buffer == nullptr ||
+            suffix == nullptr
+            ) {
+            return false;
+        }
+
+        const size_t current =
+            std::strlen(buffer);
+
+        const size_t extra =
+            std::strlen(suffix);
+
+        if (
+            current + extra + 1 >
+            capacity
+            ) {
+            return false;
+        }
+
+        memcpy(
+            buffer + current,
+            suffix,
+            extra + 1
+        );
+
+        return true;
+    }
+
+    // ------------------------------------------------------------
+    // Very early Steam context / overlay.
+    // ------------------------------------------------------------
+
+    void PrepareSteamVeryEarly()
+    {
+        SetEnvironmentVariableW(
+            L"SteamClientLaunch",
+            L"1"
+        );
+
+        SetEnvironmentVariableW(
+            L"SteamGameId",
+            L"480"
+        );
+
+        SetEnvironmentVariableW(
+            L"SteamAppId",
+            L"480"
+        );
+
+        SetEnvironmentVariableW(
+            L"SteamOverlayGameId",
+            L"480"
+        );
+
+        SetEnvironmentVariableW(
+            L"SteamEnv",
+            L"1"
+        );
+
+        g_earlySteamOverlay =
+            GetModuleHandleW(
+                L"gameoverlayrenderer64.dll"
+            );
+
+        if (g_earlySteamOverlay == nullptr)
+        {
+            g_earlySteamOverlay =
+                LoadLibraryW(
+                    L"C:\\Program Files (x86)\\Steam\\"
+                    L"gameoverlayrenderer64.dll"
+                );
+        }
+
+        if (g_earlySteamOverlay != nullptr)
+        {
+            HMODULE pinned = nullptr;
+
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_PIN,
+                L"gameoverlayrenderer64.dll",
+                &pinned
+            );
+        }
+    }
+
+    // ------------------------------------------------------------
+    // SteamCompat must be resident before steamclient64.dll appears.
+    // ------------------------------------------------------------
+
+    void LoadSteamCompatVeryEarly()
+    {
+        if (
+            GetModuleHandleW(
+                L"SteamCompat.dll"
+            ) != nullptr
+            ) {
+            return;
+        }
+
+        wchar_t path[MAX_PATH]{};
+
+        if (
+            !GetProxyDirectoryW(
+                path,
+                MAX_PATH
+            )
+            ) {
+            return;
+        }
+
+        if (
+            !AppendW(
+                path,
+                MAX_PATH,
+                L"SteamCompat.dll"
+            )
+            ) {
+            return;
+        }
+
+        g_earlySteamCompat =
+            LoadLibraryW(path);
+    }
+
+    // ------------------------------------------------------------
+    // modules.txt parser.
+    // LoadModules is called only once through InitOnce, so an STL set
+    // is unnecessary. A small fixed HMODULE array avoids duplicate init.
+    // ------------------------------------------------------------
+
+    char* TrimLine(char* line)
+    {
+        if (line == nullptr)
+            return nullptr;
+
+        while (
+            *line == ' ' ||
+            *line == '\t' ||
+            *line == '\r' ||
+            *line == '\n'
+            ) {
+            ++line;
+        }
+
+        char* end =
+            line + std::strlen(line);
+
+        while (end > line)
+        {
+            const char ch =
+                *(end - 1);
+
+            if (
+                ch != ' ' &&
+                ch != '\t' &&
+                ch != '\r' &&
+                ch != '\n'
+                ) {
+                break;
+            }
+
+            --end;
+        }
+
+        *end = '\0';
+        return line;
+    }
+
+    bool IsValidModuleName(
+        const char* name)
+    {
+        if (
+            name == nullptr ||
+            *name == '\0'
+            ) {
+            return false;
+        }
+
+        for (
+            const char* p = name;
+            *p != '\0';
+            ++p
+            ) {
+            if (
+                *p == '\\' ||
+                *p == '/' ||
+                *p == ':'
+                ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool WasInitialized(
+        HMODULE module,
+        HMODULE* initialized,
+        size_t count)
+    {
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (initialized[i] == module)
+                return true;
+        }
+
+        return false;
+    }
+
+    void InitializeModule(
+        HMODULE module,
+        HMODULE* initialized,
+        size_t& initializedCount)
+    {
+        if (module == nullptr)
+            return;
+
+        if (
+            WasInitialized(
+                module,
+                initialized,
+                initializedCount
+            )
+            ) {
+            return;
+        }
+
+        if (
+            initializedCount <
+            kMaxInitializedModules
+            ) {
+            initialized[
+                initializedCount++
+            ] = module;
+        }
+
+        const auto initialize =
+            reinterpret_cast<
+            ProxyModuleInitializeFunc
+            >(
                 GetProcAddress(
                     module,
                     "InitializeProxyModule"
                 )
                 );
 
-        // ВАЖНО:
-        // этот вызов происходит уже НЕ из DllMain.
-        // Текущий поток игры ждёт возврата функции.
-        if (initialize)
-        {
+        if (initialize != nullptr)
             initialize();
+    }
+
+    void LoadModules()
+    {
+        char directory[MAX_PATH]{};
+
+        if (
+            !GetProxyDirectoryA(
+                directory,
+                MAX_PATH
+            )
+            ) {
+            return;
         }
+
+        char modulesPath[MAX_PATH]{};
+
+        lstrcpynA(
+            modulesPath,
+            directory,
+            MAX_PATH
+        );
+
+        if (
+            !AppendA(
+                modulesPath,
+                MAX_PATH,
+                "modules.txt"
+            )
+            ) {
+            return;
+        }
+
+        HANDLE file =
+            CreateFileA(
+                modulesPath,
+                GENERIC_READ,
+                FILE_SHARE_READ |
+                FILE_SHARE_WRITE |
+                FILE_SHARE_DELETE,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr
+            );
+
+        if (file == INVALID_HANDLE_VALUE)
+            return;
+
+        LARGE_INTEGER fileSize{};
+
+        if (
+            !GetFileSizeEx(
+                file,
+                &fileSize
+            ) ||
+            fileSize.QuadPart <= 0 ||
+            fileSize.QuadPart >
+            kMaxModulesFileBytes
+            ) {
+            CloseHandle(file);
+            return;
+        }
+
+        const SIZE_T allocationSize =
+            static_cast<SIZE_T>(
+                fileSize.QuadPart
+                ) + 1;
+
+        char* data =
+            static_cast<char*>(
+                HeapAlloc(
+                    GetProcessHeap(),
+                    0,
+                    allocationSize
+                )
+                );
+
+        if (data == nullptr)
+        {
+            CloseHandle(file);
+            return;
+        }
+
+        DWORD bytesRead = 0;
+
+        const BOOL readOk =
+            ReadFile(
+                file,
+                data,
+                static_cast<DWORD>(
+                    fileSize.QuadPart
+                    ),
+                &bytesRead,
+                nullptr
+            );
+
+        CloseHandle(file);
+
+        if (!readOk)
+        {
+            HeapFree(
+                GetProcessHeap(),
+                0,
+                data
+            );
+
+            return;
+        }
+
+        data[bytesRead] = '\0';
+
+        // Strip UTF-8 BOM if present.
+        char* cursor = data;
+
+        if (
+            bytesRead >= 3 &&
+            static_cast<unsigned char>(
+                data[0]
+                ) == 0xEF &&
+            static_cast<unsigned char>(
+                data[1]
+                ) == 0xBB &&
+            static_cast<unsigned char>(
+                data[2]
+                ) == 0xBF
+            ) {
+            cursor += 3;
+        }
+
+        HMODULE initialized[
+            kMaxInitializedModules
+        ]{};
+
+            size_t initializedCount = 0;
+
+            while (*cursor != '\0')
+            {
+                char* line = cursor;
+
+                while (
+                    *cursor != '\0' &&
+                    *cursor != '\r' &&
+                    *cursor != '\n'
+                    ) {
+                    ++cursor;
+                }
+
+                if (*cursor != '\0')
+                {
+                    *cursor++ = '\0';
+
+                    while (
+                        *cursor == '\r' ||
+                        *cursor == '\n'
+                        ) {
+                        ++cursor;
+                    }
+                }
+
+                line = TrimLine(line);
+
+                if (
+                    line == nullptr ||
+                    *line == '\0' ||
+                    *line == '#' ||
+                    *line == ';' ||
+                    !IsValidModuleName(line)
+                    ) {
+                    continue;
+                }
+
+                char fullPath[MAX_PATH]{};
+
+                lstrcpynA(
+                    fullPath,
+                    directory,
+                    MAX_PATH
+                );
+
+                if (
+                    !AppendA(
+                        fullPath,
+                        MAX_PATH,
+                        line
+                    )
+                    ) {
+                    continue;
+                }
+
+                HMODULE module =
+                    GetModuleHandleA(line);
+
+                if (module == nullptr)
+                    module = LoadLibraryA(fullPath);
+
+                InitializeModule(
+                    module,
+                    initialized,
+                    initializedCount
+                );
+            }
+
+            HeapFree(
+                GetProcessHeap(),
+                0,
+                data
+            );
+    }
+
+    BOOL CALLBACK InitializeModulesOnce(
+        PINIT_ONCE,
+        PVOID,
+        PVOID*)
+    {
+        LoadModules();
+        return TRUE;
     }
 }
 
-
-// ============================================================
-// InitOnce callback
-// ============================================================
-
-BOOL CALLBACK InitializeModulesOnce(
-    PINIT_ONCE,
-    PVOID,
-    PVOID*)
-{
-    LoadModules();
-
-    return TRUE;
-}
-
-
-// ============================================================
-// Вызывать перед передачей управления настоящей winmm.dll
-// ============================================================
-
+// Called by the local WINMM wrapper before forwarding.
 void EnsureProxyModulesInitialized()
 {
     InitOnceExecuteOnce(
@@ -221,25 +635,22 @@ void EnsureProxyModulesInitialized()
     );
 }
 
-
-// ============================================================
-// DllMain
-// ============================================================
-
 BOOL APIENTRY DllMain(
     HMODULE hModule,
     DWORD reason,
-    LPVOID reserved)
+    LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
-        // Сначала максимально рано подготавливаем Steam-контекст и overlay.
-        PrepareSteamOverlayVeryEarly();
+        PrepareSteamVeryEarly();
 
-        DisableThreadLibraryCalls(hModule);
+        // Keep the working v5 timing: SteamCompat is resident before
+        // steamclient64.dll / steam_api64.dll appear.
+        LoadSteamCompatVeryEarly();
 
-        // Остальные модули из modules.txt по-прежнему загружаются
-        // через EnsureProxyModulesInitialized().
+        DisableThreadLibraryCalls(
+            hModule
+        );
     }
 
     return TRUE;
