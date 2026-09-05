@@ -95,6 +95,11 @@ public static class GameRepair
                     gameDirectory,
                     "modules.txt");
 
+            string appIdConfigPath =
+            Path.Combine(
+                gameDirectory,
+                "appid_config.txt");
+
             // ============================
             // SteamCompat.dll
             // ============================
@@ -133,6 +138,53 @@ public static class GameRepair
 
             Console.WriteLine(
                 "✓ Создан modules.txt");
+
+            // ============================
+            // appid_config.txt
+            // ============================
+
+            if (File.Exists(appIdConfigPath))
+            {
+                Console.WriteLine(
+                    "✓ appid_config.txt уже существует, не изменяем.");
+            }
+            else
+            {
+                Console.WriteLine();
+                Console.Write(
+                    "Введите AppID игры: ");
+
+                string? appIdInput =
+                    Console.ReadLine();
+
+                if (!uint.TryParse(
+                        appIdInput,
+                        out uint realAppId) ||
+                    realAppId == 0)
+                {
+                    throw new Exception(
+                        "Указан неправильный AppID.");
+                }
+
+                string appIdConfigContent =
+                    $"realid={realAppId}\n" +
+                    "fakeid=480";
+
+                File.WriteAllText(
+                    appIdConfigPath,
+                    appIdConfigContent,
+                    new UTF8Encoding(false));
+
+                Console.WriteLine();
+                Console.WriteLine(
+                    "✓ Создан appid_config.txt");
+
+                Console.WriteLine(
+                    $"  Real AppID: {realAppId}");
+
+                Console.WriteLine(
+                    "  Fake AppID: 480");
+            }
 
             Console.WriteLine();
             Console.WriteLine(

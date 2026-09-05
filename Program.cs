@@ -2664,6 +2664,47 @@ else
 
 
     // --------------------------------------------------------
+    // Создаём appid_config.txt,
+    // но только если пользователь вводил AppID
+    // и загрузка завершилась успешно.
+    // --------------------------------------------------------
+
+    if (!downloadFailed &&
+        temporaryManifestDirectory)
+    {
+        try
+        {
+            string appIdConfigPath =
+                Path.Combine(
+                    gameDirectory,
+                    "appid_config.txt");
+
+            string appIdConfig =
+                $"realid={requestedAppId}\n" +
+                "fakeid=480";
+
+            File.WriteAllText(
+                appIdConfigPath,
+                appIdConfig,
+                new UTF8Encoding(false));
+
+            Console.WriteLine();
+            Console.WriteLine(
+                "✓ Создан appid_config.txt:");
+
+            Console.WriteLine(
+                $"  {appIdConfigPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                $"⚠ Не удалось создать appid_config.txt: {ex.Message}");
+        }
+    }
+
+
+    // --------------------------------------------------------
     // Обработка временной папки manifest после успешного скачивания.
     // Папку, указанную пользователем вручную, не трогаем.
     // --------------------------------------------------------
