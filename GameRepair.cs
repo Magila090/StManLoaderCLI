@@ -25,10 +25,13 @@ public static class GameRepair
             Console.WriteLine("╚════════════════════════════════════════════╝");
             Console.WriteLine();
 
-            Console.WriteLine("1. Починка_№1, рекомендуется");
+            Console.WriteLine("1. Исправление_№1, рекомендуется");
             Console.WriteLine();
 
-            Console.WriteLine("2. Починка_№2, иногда помогает, но редко");
+            Console.WriteLine("2. Исправление_№2, иногда помогает, но редко");
+            Console.WriteLine();
+
+            Console.WriteLine("3. Удалить все исправления");
             Console.WriteLine();
 
             Console.WriteLine("0. Назад");
@@ -45,6 +48,10 @@ public static class GameRepair
 
                 case "2":
                     InstallSteamAppIdFix();
+                    break;
+
+                case "3":
+                    RemoveAllFixes();
                     break;
 
                 case "0":
@@ -64,7 +71,7 @@ public static class GameRepair
         Console.Clear();
 
         Console.WriteLine("========================================");
-        Console.WriteLine("          УСТАНОВКА ПОЧИНКА_№1");
+        Console.WriteLine("        УСТАНОВКА ИСПРАВЛЕНИЕ_№1");
         Console.WriteLine("========================================");
         Console.WriteLine();
 
@@ -74,6 +81,17 @@ public static class GameRepair
         if (gameDirectory == null)
             return;
 
+        string fixDirectory =
+            ResolveFixDirectory(
+                gameDirectory);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "Папка установки фикса:");
+
+        Console.WriteLine(
+            fixDirectory);
+
         try
         {
             Console.WriteLine();
@@ -82,22 +100,22 @@ public static class GameRepair
 
             string steamCompatPath =
                 Path.Combine(
-                    gameDirectory,
+                    fixDirectory,
                     "SteamCompat.dll");
 
             string winmmPath =
                 Path.Combine(
-                    gameDirectory,
+                    fixDirectory,
                     "winmm.dll");
 
             string modulesPath =
                 Path.Combine(
-                    gameDirectory,
+                    fixDirectory,
                     "modules.txt");
 
             string appIdConfigPath =
             Path.Combine(
-                gameDirectory,
+                fixDirectory,
                 "appid_config.txt");
 
             // ============================
@@ -208,7 +226,7 @@ public static class GameRepair
         Console.Clear();
 
         Console.WriteLine("========================================");
-        Console.WriteLine("          УСТАНОВКА ПОЧИНКА_№2");
+        Console.WriteLine("        УСТАНОВКА ИСПРАВЛЕНИЕ_№2");
         Console.WriteLine("========================================");
         Console.WriteLine();
 
@@ -218,11 +236,22 @@ public static class GameRepair
         if (gameDirectory == null)
             return;
 
+        string fixDirectory =
+            ResolveFixDirectory(
+                gameDirectory);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "Папка установки фикса:");
+
+        Console.WriteLine(
+            fixDirectory);
+
         try
         {
             string steamAppIdPath =
                 Path.Combine(
-                    gameDirectory,
+                    fixDirectory,
                     "steam_appid.txt");
 
             if (File.Exists(steamAppIdPath))
@@ -251,6 +280,99 @@ public static class GameRepair
             Console.WriteLine();
             Console.WriteLine(
                 "✗ Не удалось установить фикс:");
+
+            Console.WriteLine(
+                ex.Message);
+        }
+
+        Pause();
+    }
+
+    private static void RemoveAllFixes()
+    {
+        Console.Clear();
+
+        Console.WriteLine("========================================");
+        Console.WriteLine("       УДАЛЕНИЕ ВСЕХ ИСПРАВЛЕНИЙ");
+        Console.WriteLine("========================================");
+        Console.WriteLine();
+
+        string? gameDirectory =
+            AskGameDirectory();
+
+        if (gameDirectory == null)
+            return;
+
+        string fixDirectory =
+            ResolveFixDirectory(
+                gameDirectory);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "Папка исправлений:");
+
+        Console.WriteLine(
+            fixDirectory);
+
+        Console.WriteLine();
+
+        string[] filesToDelete =
+        {
+            "SteamCompat.dll",
+            "winmm.dll",
+            "modules.txt",
+            "appid_config.txt",
+            "steam_appid.txt"
+        };
+
+        int deletedCount = 0;
+
+        try
+        {
+            foreach (string fileName in filesToDelete)
+            {
+                string filePath =
+                    Path.Combine(
+                        fixDirectory,
+                        fileName);
+
+                if (!File.Exists(filePath))
+                {
+                    Console.WriteLine(
+                        $"— {fileName} не найден");
+
+                    continue;
+                }
+
+                File.Delete(filePath);
+
+                Console.WriteLine(
+                    $"✓ Удалён {fileName}");
+
+                deletedCount++;
+            }
+
+            Console.WriteLine();
+
+            if (deletedCount == 0)
+            {
+                Console.WriteLine(
+                    "✓ Исправления не найдены.");
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"✓ Удалено файлов: {deletedCount}");
+
+                Console.WriteLine(
+                    "✓ Все исправления удалены.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "✗ Не удалось удалить исправления:");
 
             Console.WriteLine(
                 ex.Message);
@@ -303,6 +425,62 @@ public static class GameRepair
         Console.WriteLine("✓ Папка игры найдена:");
         Console.WriteLine(gameDirectory);
 
+        return gameDirectory;
+    }
+
+    private static string ResolveFixDirectory(
+        string gameDirectory)
+    {
+        // Ищем только папки первого уровня.
+        foreach (string subDirectory
+                in Directory.GetDirectories(gameDirectory))
+        {
+            string binariesPath =
+                Path.Combine(
+                    subDirectory,
+                    "Binaries");
+
+            string contentPath =
+                Path.Combine(
+                    subDirectory,
+                    "Content");
+
+            string win64Path =
+                Path.Combine(
+                    binariesPath,
+                    "Win64");
+
+            // Unreal-подобная структура:
+            //
+            // <Game>\
+            //   Binaries\
+            //     Win64\
+            //   Content\
+            //
+            if (!Directory.Exists(binariesPath) ||
+                !Directory.Exists(contentPath) ||
+                !Directory.Exists(win64Path))
+            {
+                continue;
+            }
+
+            // Проверяем, что в Win64 действительно есть exe.
+            bool hasExe =
+                Directory
+                    .EnumerateFiles(
+                        win64Path,
+                        "*.exe",
+                        SearchOption.TopDirectoryOnly)
+                    .Any();
+
+            if (!hasExe)
+                continue;
+
+            return win64Path;
+        }
+
+        // Специальная структура не найдена —
+        // используем папку, которую указал пользователь.
         return gameDirectory;
     }
 
