@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 public class AppConfig
 {
@@ -13,6 +14,9 @@ public class AppConfig
     public string? ManifestKeepDirectory { get; set; }
 
     public string? OwnManifestDirectory { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RyuuAuthKey { get; set; }
 }
 
 public static class ConfigManager

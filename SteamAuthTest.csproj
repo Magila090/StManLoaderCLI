@@ -15,11 +15,22 @@
   </ItemGroup>
 
   <ItemGroup>
-  <EmbeddedResource Include="Fixes\SteamCompat.dll"
+  <!-- Исправление №1 -->
+  <EmbeddedResource Include="Fixes\1\SteamCompat.dll"
                     LogicalName="GameFixes.SteamCompat.dll" />
 
-  <EmbeddedResource Include="Fixes\winmm.dll"
+  <EmbeddedResource Include="Fixes\1\winmm.dll"
                     LogicalName="GameFixes.winmm.dll" />
-</ItemGroup>
+
+  <!-- Исправление №3 -->
+  <EmbeddedResource Include="Fixes\3\SteamFix64.dll"
+                    LogicalName="GameFixes.Fix3.SteamFix64.dll" />
+
+  <EmbeddedResource Include="Fixes\3\EpicFix64.dll"
+                    LogicalName="GameFixes.Fix3.EpicFix64.dll" />
+
+  <EmbeddedResource Include="Fixes\3\winmm.dll"
+                    LogicalName="GameFixes.Fix3.winmm.dll" />
+  </ItemGroup>
 
 </Project>

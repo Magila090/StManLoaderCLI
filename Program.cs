@@ -16,7 +16,12 @@ Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 AppConfig config = ConfigManager.Load();
 
-const string ryuuAuthKey = "???"; // Вставьте свой ключ
+const string defaultRyuuAuthKey = "???"; // Вставьте свой ключ
+
+string ryuuAuthKey =
+    string.IsNullOrWhiteSpace(config.RyuuAuthKey)
+        ? defaultRyuuAuthKey
+        : config.RyuuAuthKey.Trim();
 
 string? downloadDirectory =
     config.DownloadDirectory;
@@ -81,6 +86,7 @@ async Task MainMenuAsync()
         Console.WriteLine("6. Папка манифестов");
         Console.WriteLine("7. Исправить игру");
         Console.WriteLine("8. Собственные манифесты");
+        Console.WriteLine("9. Ключ загрузки");
         Console.WriteLine("0. Выход");
         Console.WriteLine();
         Console.WriteLine("────────────────────────────────────────────");
@@ -122,6 +128,10 @@ async Task MainMenuAsync()
 
             case "8":
                 await OwnManifestMenuAsync();
+                break;
+
+            case "9":
+                RyuuKeyMenu();
                 break;
 
             case "0":
@@ -952,7 +962,12 @@ void OwnManifestDirectoryMenu()
     Console.Clear();
 
     Console.WriteLine(
-        "=== Папка собственных манифестов ===");
+        "╔════════════════════════════════════════════╗");
+    Console.WriteLine(
+        "║        Папка собственных манифестов        ║");
+    Console.WriteLine(
+        "╚════════════════════════════════════════════╝");
+
     Console.WriteLine();
 
     Console.WriteLine(
@@ -1008,7 +1023,7 @@ async Task DownloadOwnManifestsAsync()
     Console.WriteLine(
         "╔════════════════════════════════════════════╗");
     Console.WriteLine(
-        "║        Скачать собственные manifest       ║");
+        "║        Скачать собственные manifest        ║");
     Console.WriteLine(
         "╚════════════════════════════════════════════╝");
     Console.WriteLine();
@@ -1122,6 +1137,140 @@ async Task DownloadOwnManifestsAsync()
     }
 
     await PauseAsync();
+}
+
+
+// ============================================================
+// КЛЮЧ ЗАГРУЗКИ
+// ============================================================
+
+void RyuuKeyMenu()
+{
+    while (true)
+    {
+        Console.Clear();
+
+        Console.WriteLine(
+            "╔════════════════════════════════════════════╗");
+        Console.WriteLine(
+            "║               Ключ загрузки                ║");
+        Console.WriteLine(
+            "╚════════════════════════════════════════════╝");
+
+        Console.WriteLine();
+
+        Console.WriteLine("Получить ключ можно здесь:");
+
+        Console.WriteLine("generator.ryuu.lol/api");
+
+        Console.WriteLine();
+
+        bool customKey =
+            !string.IsNullOrWhiteSpace(
+                config.RyuuAuthKey);
+
+        Console.WriteLine(
+            $"Текущий ключ: {(customKey ? "пользовательский" : "встроенный")}");
+
+        Console.WriteLine();
+        Console.WriteLine("1. Изменить ключ");
+
+        if (customKey)
+        {
+            Console.WriteLine(
+                "2. Использовать встроенный ключ");
+        }
+
+        Console.WriteLine("0. Назад");
+        Console.WriteLine();
+
+        Console.Write(
+            "Выберите действие: ");
+
+        string? choice =
+            Console.ReadLine();
+
+        switch (choice)
+        {
+            case "1":
+                ChangeRyuuKey();
+                break;
+
+            case "2":
+                if (!customKey)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine(
+                        "✗ Неправильный выбор.");
+
+                    Pause();
+                    break;
+                }
+
+                config.RyuuAuthKey = null;
+
+                ConfigManager.Save(config);
+
+                ryuuAuthKey =
+                    defaultRyuuAuthKey;
+
+                Console.WriteLine();
+                Console.WriteLine(
+                    "✓ Теперь используется встроенный ключ.");
+
+                Pause();
+                break;
+
+            case "0":
+                return;
+
+            default:
+                Console.WriteLine();
+                Console.WriteLine(
+                    "✗ Неправильный выбор.");
+
+                Pause();
+                break;
+        }
+    }
+}
+
+void ChangeRyuuKey()
+{
+    Console.Clear();
+
+    Console.WriteLine(
+            "╔════════════════════════════════════════════╗");
+        Console.WriteLine(
+            "║          Изменение ключа загрузки          ║");
+        Console.WriteLine(
+            "╚════════════════════════════════════════════╝");
+        Console.WriteLine();
+    Console.Write(
+        "Введите новый ключ или Enter для отмены: ");
+
+    string? input =
+        Console.ReadLine();
+
+    if (string.IsNullOrWhiteSpace(input))
+        return;
+
+    string newKey =
+        input.Trim();
+
+    config.RyuuAuthKey =
+        newKey;
+
+    ConfigManager.Save(config);
+
+    ryuuAuthKey =
+        newKey;
+
+    Console.WriteLine();
+    Console.WriteLine(
+        "✓ Пользовательский ключ сохранён.");
+
+    Pause();
 }
 
 
@@ -2674,9 +2823,13 @@ else
     {
         try
         {
+            string appIdConfigDirectory =
+                GameRepair.ResolveFixDirectory(
+                    gameDirectory);
+
             string appIdConfigPath =
                 Path.Combine(
-                    gameDirectory,
+                    appIdConfigDirectory,
                     "appid_config.txt");
 
             string appIdConfig =
@@ -2762,7 +2915,7 @@ else
                 // Если папка хранения совпала с родительской папкой
                 // временного manifest-каталога, targetDirectory будет
                 // отличаться суффиксом и перенос останется безопасным.
-                Directory.Move(
+                MoveDirectorySafe(
                     sourceDirectory,
                     targetDirectory);
 
@@ -2809,6 +2962,138 @@ static string GetUniqueManifestDirectory(
             return candidate;
 
         index++;
+    }
+}
+
+static void MoveDirectorySafe(
+    string sourceDirectory,
+    string targetDirectory)
+{
+    sourceDirectory =
+        Path.GetFullPath(sourceDirectory);
+
+    targetDirectory =
+        Path.GetFullPath(targetDirectory);
+
+    if (!Directory.Exists(sourceDirectory))
+    {
+        throw new DirectoryNotFoundException(
+            $"Исходная папка не найдена: {sourceDirectory}");
+    }
+
+    if (Directory.Exists(targetDirectory))
+    {
+        throw new IOException(
+            $"Папка назначения уже существует: {targetDirectory}");
+    }
+
+    string? sourceRoot =
+        Path.GetPathRoot(sourceDirectory);
+
+    string? targetRoot =
+        Path.GetPathRoot(targetDirectory);
+
+    bool sameDrive =
+        string.Equals(
+            sourceRoot,
+            targetRoot,
+            StringComparison.OrdinalIgnoreCase);
+
+    // --------------------------------------------------------
+    // Один диск — обычный быстрый перенос.
+    // --------------------------------------------------------
+
+    if (sameDrive)
+    {
+        Directory.Move(
+            sourceDirectory,
+            targetDirectory);
+
+        return;
+    }
+
+    // --------------------------------------------------------
+    // Разные диски —
+    // сначала полностью копируем папку.
+    // --------------------------------------------------------
+
+    try
+    {
+        CopyDirectoryRecursive(
+            sourceDirectory,
+            targetDirectory);
+
+        // Копирование полностью завершилось —
+        // теперь можно удалить исходную папку.
+        Directory.Delete(
+            sourceDirectory,
+            recursive: true);
+    }
+    catch
+    {
+        // Если копирование оборвалось,
+        // исходную папку НЕ удаляем.
+        //
+        // А недокопированную папку назначения
+        // стараемся убрать.
+        try
+        {
+            if (Directory.Exists(targetDirectory))
+            {
+                Directory.Delete(
+                    targetDirectory,
+                    recursive: true);
+            }
+        }
+        catch
+        {
+        }
+
+        throw;
+    }
+}
+
+static void CopyDirectoryRecursive(
+    string sourceDirectory,
+    string targetDirectory)
+{
+    Directory.CreateDirectory(
+        targetDirectory);
+
+    // Копируем файлы текущей папки.
+    foreach (string sourceFile
+             in Directory.GetFiles(sourceDirectory))
+    {
+        string fileName =
+            Path.GetFileName(sourceFile);
+
+        string targetFile =
+            Path.Combine(
+                targetDirectory,
+                fileName);
+
+        File.Copy(
+            sourceFile,
+            targetFile,
+            overwrite: false);
+    }
+
+    // Копируем вложенные папки.
+    foreach (string sourceSubDirectory
+             in Directory.GetDirectories(sourceDirectory))
+    {
+        string directoryName =
+            Path.GetFileName(
+                sourceSubDirectory);
+
+        string targetSubDirectory =
+            Path.Combine(
+                targetDirectory,
+                directoryName);
+
+        CopyDirectoryRecursive(
+            sourceSubDirectory,
+            targetSubDirectory);
     }
 }
 

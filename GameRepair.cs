@@ -21,7 +21,7 @@ public static class GameRepair
             Console.Clear();
 
             Console.WriteLine("╔════════════════════════════════════════════╗");
-            Console.WriteLine("║                  ФИКСЫ ИГР                 ║");
+            Console.WriteLine("║              Исправления игр               ║");
             Console.WriteLine("╚════════════════════════════════════════════╝");
             Console.WriteLine();
 
@@ -31,7 +31,10 @@ public static class GameRepair
             Console.WriteLine("2. Исправление_№2, иногда помогает, но редко");
             Console.WriteLine();
 
-            Console.WriteLine("3. Удалить все исправления");
+            Console.WriteLine("3. Исправление_№3 (FreeTP)");
+            Console.WriteLine();
+
+            Console.WriteLine("4. Удалить все исправления");
             Console.WriteLine();
 
             Console.WriteLine("0. Назад");
@@ -51,6 +54,10 @@ public static class GameRepair
                     break;
 
                 case "3":
+                    InstallSteamEpicFix();
+                    break;
+
+                case "4":
                     RemoveAllFixes();
                     break;
 
@@ -70,9 +77,13 @@ public static class GameRepair
     {
         Console.Clear();
 
-        Console.WriteLine("========================================");
-        Console.WriteLine("        УСТАНОВКА ИСПРАВЛЕНИЕ_№1");
-        Console.WriteLine("========================================");
+        Console.WriteLine(
+            "╔════════════════════════════════════════════╗");
+        Console.WriteLine(
+            "║          Установка исправления_№1          ║");
+        Console.WriteLine(
+            "╚════════════════════════════════════════════╝");
+
         Console.WriteLine();
 
         string? gameDirectory =
@@ -112,11 +123,6 @@ public static class GameRepair
                 Path.Combine(
                     fixDirectory,
                     "modules.txt");
-
-            string appIdConfigPath =
-            Path.Combine(
-                fixDirectory,
-                "appid_config.txt");
 
             // ============================
             // SteamCompat.dll
@@ -161,48 +167,8 @@ public static class GameRepair
             // appid_config.txt
             // ============================
 
-            if (File.Exists(appIdConfigPath))
-            {
-                Console.WriteLine(
-                    "✓ appid_config.txt уже существует, не изменяем.");
-            }
-            else
-            {
-                Console.WriteLine();
-                Console.Write(
-                    "Введите AppID игры: ");
-
-                string? appIdInput =
-                    Console.ReadLine();
-
-                if (!uint.TryParse(
-                        appIdInput,
-                        out uint realAppId) ||
-                    realAppId == 0)
-                {
-                    throw new Exception(
-                        "Указан неправильный AppID.");
-                }
-
-                string appIdConfigContent =
-                    $"realid={realAppId}\n" +
-                    "fakeid=480";
-
-                File.WriteAllText(
-                    appIdConfigPath,
-                    appIdConfigContent,
-                    new UTF8Encoding(false));
-
-                Console.WriteLine();
-                Console.WriteLine(
-                    "✓ Создан appid_config.txt");
-
-                Console.WriteLine(
-                    $"  Real AppID: {realAppId}");
-
-                Console.WriteLine(
-                    "  Fake AppID: 480");
-            }
+            GetOrCreateRealAppId(
+                fixDirectory);
 
             Console.WriteLine();
             Console.WriteLine(
@@ -225,9 +191,13 @@ public static class GameRepair
     {
         Console.Clear();
 
-        Console.WriteLine("========================================");
-        Console.WriteLine("        УСТАНОВКА ИСПРАВЛЕНИЕ_№2");
-        Console.WriteLine("========================================");
+        Console.WriteLine(
+            "╔════════════════════════════════════════════╗");
+        Console.WriteLine(
+            "║          Установка исправления_№2          ║");
+        Console.WriteLine(
+            "╚════════════════════════════════════════════╝");
+
         Console.WriteLine();
 
         string? gameDirectory =
@@ -288,13 +258,205 @@ public static class GameRepair
         Pause();
     }
 
+    private static void InstallSteamEpicFix()
+    {
+        Console.Clear();
+
+        Console.WriteLine(
+            "╔════════════════════════════════════════════╗");
+        Console.WriteLine(
+            "║          Установка исправления_№3          ║");
+        Console.WriteLine(
+            "╚════════════════════════════════════════════╝");
+
+        Console.WriteLine();
+
+        string? gameDirectory =
+            AskGameDirectory();
+
+        if (gameDirectory == null)
+            return;
+
+        string fixDirectory =
+            ResolveFixDirectory(
+                gameDirectory);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            "Папка установки фикса:");
+
+        Console.WriteLine(
+            fixDirectory);
+
+        try
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "Устанавливаем фикс...");
+            Console.WriteLine();
+
+            // ----------------------------------------------------
+            // Получаем настоящий AppID.
+            // Если appid_config.txt отсутствует —
+            // функция сама спросит AppID и создаст его.
+            // ----------------------------------------------------
+
+            uint realAppId =
+                GetOrCreateRealAppId(
+                    fixDirectory);
+
+            // ----------------------------------------------------
+            // Пути
+            // ----------------------------------------------------
+
+            string steamFixDllPath =
+                Path.Combine(
+                    fixDirectory,
+                    "SteamFix64.dll");
+
+            string epicFixDllPath =
+                Path.Combine(
+                    fixDirectory,
+                    "EpicFix64.dll");
+
+            string winmmDllPath =
+                Path.Combine(
+                    fixDirectory,
+                    "winmm.dll");
+
+            string winmmTxtPath =
+                Path.Combine(
+                    fixDirectory,
+                    "winmm.txt");
+
+            string steamFixIniPath =
+                Path.Combine(
+                    fixDirectory,
+                    "SteamFix.ini");
+
+            string epicFixIniPath =
+                Path.Combine(
+                    fixDirectory,
+                    "EpicFix.ini");
+
+            // ----------------------------------------------------
+            // DLL
+            // ----------------------------------------------------
+
+            ExtractEmbeddedFile(
+                "GameFixes.Fix3.SteamFix64.dll",
+                steamFixDllPath);
+
+            Console.WriteLine(
+                "✓ Установлен SteamFix64.dll");
+
+            ExtractEmbeddedFile(
+                "GameFixes.Fix3.EpicFix64.dll",
+                epicFixDllPath);
+
+            Console.WriteLine(
+                "✓ Установлен EpicFix64.dll");
+
+            ExtractEmbeddedFile(
+                "GameFixes.Fix3.winmm.dll",
+                winmmDllPath);
+
+            Console.WriteLine(
+                "✓ Установлен winmm.dll");
+
+            // ----------------------------------------------------
+            // winmm.txt
+            // ----------------------------------------------------
+
+            string winmmContent =
+                "SteamFix64.dll\r\n" +
+                "EpicFix64.dll";
+
+            WriteTextWithoutBom(
+                winmmTxtPath,
+                winmmContent);
+
+            Console.WriteLine(
+                "✓ Создан winmm.txt");
+
+            // ----------------------------------------------------
+            // EpicFix.ini
+            // ----------------------------------------------------
+
+            string epicFixContent =
+                "[EOS]\r\n" +
+                "NoAuth=true";
+
+            WriteTextWithoutBom(
+                epicFixIniPath,
+                epicFixContent);
+
+            Console.WriteLine(
+                "✓ Создан EpicFix.ini");
+
+            // ----------------------------------------------------
+            // SteamFix.ini
+            // ----------------------------------------------------
+
+            string steamFixContent =
+                "[Main]\r\n" +
+                $"RealAppId={realAppId}\r\n" +
+                "FakeAppId=480\r\n" +
+                "#Language=english\r\n" +
+                "BuildId=0\r\n" +
+                "\r\n" +
+                "[Misc]\r\n" +
+                "Overlay=true\r\n" +
+                "FilterLobby=false\r\n" +
+                "\r\n" +
+                "[Interfaces]\r\n" +
+                "Apps=true\r\n" +
+                "Friends=true\r\n" +
+                "User=true\r\n" +
+                "Inventory=true\r\n" +
+                "Stats=true\r\n" +
+                "Storage=true\r\n" +
+                "Utils=true\r\n" +
+                "Workshop=false";
+
+            WriteTextWithoutBom(
+                steamFixIniPath,
+                steamFixContent);
+
+            Console.WriteLine(
+                "✓ Создан SteamFix.ini");
+
+            Console.WriteLine(
+                $"✓ RealAppId: {realAppId}");
+
+            Console.WriteLine();
+            Console.WriteLine(
+                "✓ Исправление №3 успешно установлено.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "✗ Не удалось установить исправление:");
+
+            Console.WriteLine(
+                ex.Message);
+        }
+
+        Pause();
+    }
+
     private static void RemoveAllFixes()
     {
         Console.Clear();
 
-        Console.WriteLine("========================================");
-        Console.WriteLine("       УДАЛЕНИЕ ВСЕХ ИСПРАВЛЕНИЙ");
-        Console.WriteLine("========================================");
+        Console.WriteLine(
+            "╔════════════════════════════════════════════╗");
+        Console.WriteLine(
+            "║         Удаление всех исправлений          ║");
+        Console.WriteLine(
+            "╚════════════════════════════════════════════╝");
+
         Console.WriteLine();
 
         string? gameDirectory =
@@ -318,11 +480,22 @@ public static class GameRepair
 
         string[] filesToDelete =
         {
+            // Исправление №1
             "SteamCompat.dll",
-            "winmm.dll",
             "modules.txt",
-            "appid_config.txt",
-            "steam_appid.txt"
+
+            // Исправление №2
+            "steam_appid.txt",
+
+            // Исправление №3
+            "SteamFix64.dll",
+            "EpicFix64.dll",
+            "winmm.txt",
+            "SteamFix.ini",
+            "EpicFix.ini",
+
+            // Общий файл исправлений №1 / №3
+            "winmm.dll"
         };
 
         int deletedCount = 0;
@@ -381,6 +554,110 @@ public static class GameRepair
         Pause();
     }
 
+    private static uint GetOrCreateRealAppId(
+        string fixDirectory)
+    {
+        string appIdConfigPath =
+            Path.Combine(
+                fixDirectory,
+                "appid_config.txt");
+
+        // --------------------------------------------------------
+        // Сначала пытаемся прочитать существующий appid_config.txt
+        // --------------------------------------------------------
+
+        if (File.Exists(appIdConfigPath))
+        {
+            try
+            {
+                foreach (string line
+                        in File.ReadAllLines(appIdConfigPath))
+                {
+                    string trimmed =
+                        line.Trim();
+
+                    if (!trimmed.StartsWith(
+                            "realid=",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    string value =
+                        trimmed[
+                            "realid=".Length..]
+                        .Trim();
+
+                    if (uint.TryParse(
+                            value,
+                            out uint existingAppId) &&
+                        existingAppId != 0)
+                    {
+                        Console.WriteLine(
+                            $"✓ AppID получен из appid_config.txt: {existingAppId}");
+
+                        return existingAppId;
+                    }
+                }
+
+                Console.WriteLine();
+                Console.WriteLine(
+                    "⚠ В appid_config.txt не найден корректный realid.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine();
+                Console.WriteLine(
+                    $"⚠ Не удалось прочитать appid_config.txt: {ex.Message}");
+            }
+        }
+
+        // --------------------------------------------------------
+        // Файла нет или realid неправильный — спрашиваем AppID.
+        // --------------------------------------------------------
+
+        while (true)
+        {
+            Console.WriteLine();
+            Console.Write(
+                "Введите AppID игры: ");
+
+            string? input =
+                Console.ReadLine();
+
+            if (!uint.TryParse(
+                    input,
+                    out uint appId) ||
+                appId == 0)
+            {
+                Console.WriteLine(
+                    "✗ Неправильный AppID.");
+
+                continue;
+            }
+
+            string content =
+                $"realid={appId}\r\n" +
+                "fakeid=480";
+
+            WriteTextWithoutBom(
+                appIdConfigPath,
+                content);
+
+            Console.WriteLine();
+            Console.WriteLine(
+                "✓ Создан appid_config.txt");
+
+            Console.WriteLine(
+                $"  Real AppID: {appId}");
+
+            Console.WriteLine(
+                "  Fake AppID: 480");
+
+            return appId;
+        }
+    }
+
     private static string? AskGameDirectory()
     {
         Console.Write("Введите путь к папке игры: ");
@@ -428,7 +705,7 @@ public static class GameRepair
         return gameDirectory;
     }
 
-    private static string ResolveFixDirectory(
+    public static string ResolveFixDirectory(
         string gameDirectory)
     {
         // Ищем только папки первого уровня.
